@@ -91,9 +91,16 @@
     return id;
   }
   const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
+  // prix fixe, ou fourchette « 1 000 $ – 2 000 $ » quand un prix maximum est indiqué
+  const isNum = v => v !== null && v !== undefined && v !== '' && !isNaN(+v);
   function priceParts(l) {
-    if (l.price === null || l.price === undefined || l.price === '' || isNaN(+l.price)) return { text: 'Prix sur demande', ask: true };
-    return { text: nf.format(+l.price) + ' $', per: l.deal === 'location' ? ' / ' + (PERIODS[l.period] || 'semaine') : '' };
+    const lo = isNum(l.price) ? +l.price : null, hi = isNum(l.priceMax) ? +l.priceMax : null;
+    if (lo === null && hi === null) return { text: 'Prix sur demande', ask: true };
+    const per = l.deal === 'location' ? ' / ' + (PERIODS[l.period] || 'semaine') : '';
+    const $$ = v => nf.format(v) + '\u00a0$';   // le montant et « $ » restent sur la même ligne
+    if (lo !== null && hi !== null && hi > lo) return { text: $$(lo) + ' – ' + $$(hi), per, range: true };
+    if (lo === null) return { text: 'Jusqu’à ' + $$(hi), per, range: true };
+    return { text: $$(lo), per };
   }
   // option garage : supplément affiché sous le prix (« + Option garage : +750 $ / semaine »)
   function optionText(l) {
@@ -142,7 +149,7 @@
 
   function priceEl(l, cls) {
     const p = priceParts(l);
-    return el('p', { class: 'price' + (p.ask ? ' ask' : '') + (cls ? ' ' + cls : '') }, [p.text, p.per ? el('small', { text: p.per }) : null]);
+    return el('p', { class: 'price' + (p.ask ? ' ask' : '') + (p.range ? ' range' : '') + (cls ? ' ' + cls : '') }, [p.text, p.per ? el('small', { text: p.per }) : null]);
   }
   function mediaURL(path) {
     if (!path) return '';
@@ -655,7 +662,7 @@
       (f.type === 'all' || l.type === f.type) && (f.deal === 'all' || l.deal === f.deal) &&
       (!f.q || (l.name + ' ' + (l.type || '')).toLowerCase().includes(f.q.toLowerCase())) &&
       (state.agent || l.points.length > 0));
-    const pv = l => (l.price === null || l.price === '' || isNaN(+l.price)) ? null : +l.price;
+    const pv = l => isNum(l.price) ? +l.price : isNum(l.priceMax) ? +l.priceMax : null;
     if (f.sort === 'recent') items.sort((a, b) => (b.order || 0) - (a.order || 0));
     else items.sort((a, b) => { const x = pv(a), y = pv(b); if (x === null) return 1; if (y === null) return -1; return f.sort === 'asc' ? x - y : y - x; });
     if (state.agent) {
@@ -758,14 +765,16 @@
     };
     renderRooms();
     const ro = !canEditListing(l);
-    if (ro) [name, type, period, deal, price, status, garage, desc, feats].forEach(i => { i.disabled = true; });
+    const priceMax = el('input', { id: 'lPriceMax', type: 'number', min: '0', step: '1000', inputmode: 'numeric', value: l.priceMax ?? '', placeholder: 'Facultatif', oninput: e => upd('priceMax', num(e.target.value)) });
+    if (ro) [name, type, period, deal, price, priceMax, status, garage, desc, feats].forEach(i => { i.disabled = true; });
     openSheet(isNew ? 'Nouveau bien' : ro ? l.name : 'Modifier le bien', [
       isNew ? el('p', { class: 'note', text: 'Remplis les infos, puis ajoute les pièces avec tes screens. Pense à enregistrer à la fin.' }) : null,
       ro ? el('p', { class: 'note', text: 'Ce bien a été créé par ' + (l.createdBy || 'un admin') + ' : tu peux y ajouter des pièces et choisir la pièce de départ, mais pas modifier ses infos ni son prix.' }) : null,
       field('Nom du bien', name),
       el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
       el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
-      field('Prix ($)', price, 'Laisse vide pour afficher « Prix sur demande ».'),
+      el('div', { class: 'row2' }, [field('Prix ($)', price), field('Prix maximum ($)', priceMax)]),
+      el('p', { class: 'help', style: { margin: '-6px 0 0' }, text: 'Un seul prix : laisse « Prix maximum » vide. Une fourchette : remplis les deux (ex. 1 000 et 2 000 → « 1 000 $ – 2 000 $ »). Rien du tout : « Prix sur demande ».' }),
       garageField,
       field('Description', desc),
       field('Points forts', feats, 'Sépare-les par des virgules.'),
@@ -881,7 +890,7 @@
     $('vEyebrow').textContent = kindOf(l);
     $('vName').textContent = l.name;
     const pr = priceParts(l), pe = $('vPrice');
-    pe.className = 'price' + (pr.ask ? ' ask' : ''); pe.innerHTML = '';
+    pe.className = 'price' + (pr.ask ? ' ask' : '') + (pr.range ? ' range' : ''); pe.innerHTML = '';
     pe.append(pr.text); if (pr.per) pe.append(el('small', { text: pr.per }));
     const ot = optionText(l), vo = $('vOption');
     vo.hidden = !ot; vo.innerHTML = '';

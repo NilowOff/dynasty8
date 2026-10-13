@@ -202,7 +202,7 @@ function sanitize(d, lenient) {
     l.period = ['semaine', 'mois', 'jour'].includes(l.period) ? l.period : 'semaine';
     l.status = ['disponible', 'reserve', 'vendu', 'loue'].includes(l.status) ? l.status : 'disponible';
     if (OLD_TYPES[l.type]) l.type = OLD_TYPES[l.type];
-    l.price = numOrNull(l.price); l.garagePrice = numOrNull(l.garagePrice);
+    l.price = numOrNull(l.price); l.priceMax = numOrNull(l.priceMax); l.garagePrice = numOrNull(l.garagePrice);
     delete l.district; delete l.surface; delete l.rooms; delete l.garage;
     l.description = str(l.description, 4000);
     l.features = Array.isArray(l.features) ? l.features.map(f => str(f, 80)).filter(Boolean).slice(0, 30) : [];
