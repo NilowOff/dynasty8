@@ -236,7 +236,7 @@ function stampAuthors(cur, next, me) {
   });
 }
 
-// règles du gérant : il crée des biens et des pièces, modifie ce qu'il a créé, ne supprime rien
+// règles du gérant : il crée des biens et des pièces, modifie ce qu'il a créé, choisit la pièce de départ, ne supprime rien
 function checkGerant(cur, next, me) {
   const nextL = new Map(next.listings.map(l => [l.id, l]));
   for (const cl of cur.listings) {
@@ -256,7 +256,7 @@ function checkGerant(cur, next, me) {
     if (!ownListing) {
       const strip = l => { const { points, ...rest } = l; return rest; };
       const a = strip(cl), b = strip(nl);
-      if (a.start === null || a.start === undefined) { delete a.start; delete b.start; }
+      delete a.start; delete b.start;   // la pièce de départ de la visite peut être choisie par un gérant
       if (a.cover === null || a.cover === undefined) { delete a.cover; delete b.cover; }
       if (!eq(a, b)) deny('Un gérant ne peut pas modifier les infos ni le prix de « ' + (cl.name || cl.id) + ' » : ce bien a été créé par quelqu’un d’autre.');
     }
