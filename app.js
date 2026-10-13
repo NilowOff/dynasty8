@@ -103,6 +103,40 @@
     const t = optionText(l);
     return t ? el('p', { class: 'opt' }, ['Option garage : ', el('b', { text: t })]) : null;
   }
+  // « Bureaux en location », « Maison en vente »
+  function kindOf(l) { return (l.type || 'Bien') + ' en ' + (DEALS[l.deal] || 'Vente').toLowerCase(); }
+
+  // accueil : le panorama du bien à l'affiche défile lentement (une image 360° se raccorde à elle-même)
+  let heroImg = null;
+  function renderHero() {
+    const d = state.data; if (!d || !$('hero')) return;
+    const open = d.listings.filter(l => l.points.length && (l.status === 'disponible' || l.status === 'reserve'));
+    const pool = open.length ? open : d.listings.filter(l => l.points.length);
+    const f = pool.slice().sort((a, b) => (b.order || 0) - (a.order || 0))[0];
+    const fe = $('heroFeature');
+    let url = 'pano_2k.jpg';
+    if (f) {
+      const p = pointOf(f, f.start) || f.points[0];
+      url = mediaURL(p.imageSmall || p.image);
+      fe.hidden = false; fe.href = '#' + f.id;
+      $('heroName').textContent = 'Visiter ' + f.name;
+      const pr = priceParts(f); $('heroPrice').textContent = pr.text + (pr.per || '');
+    } else fe.hidden = true;
+    if (url === heroImg) return;
+    heroImg = url;
+    const pano = $('heroPano'), img = new Image();
+    img.onload = () => { if (heroImg !== url) return; pano.style.setProperty('--hero-img', 'url("' + url + '")'); sizeHero(); pano.classList.add('ready'); };
+    img.src = url;
+  }
+  function sizeHero() {
+    const h = $('hero'), pano = $('heroPano'); if (!h || !pano) return;
+    const tile = Math.round(h.clientHeight * 1.65 * 2);
+    pano.style.setProperty('--tile', tile + 'px');
+    pano.style.setProperty('--pan', Math.round(tile / 22) + 's');
+  }
+  window.addEventListener('resize', sizeHero);
+  if ($('heroGo')) $('heroGo').addEventListener('click', () => $('catalog').scrollIntoView({ block: 'start' }));
+
   function priceEl(l, cls) {
     const p = priceParts(l);
     return el('p', { class: 'price' + (p.ask ? ' ask' : '') + (cls ? ' ' + cls : '') }, [p.text, p.per ? el('small', { text: p.per }) : null]);
@@ -386,7 +420,7 @@
   function updateStaffUI() {
     const u = state.user;
     const tag = $('agentTag');
-    if (tag) tag.textContent = u ? (ROLE_NAMES[u.role] || u.role) + ' · ' + u.username : 'Mode agent';
+    if (tag) tag.textContent = u ? u.username + ' (' + (ROLE_NAMES[u.role] || u.role) + ')' : 'Mode agent';
     if ($('staffBtn')) $('staffBtn').hidden = !(u && u.role === 'admin');
     if ($('accountBtn')) $('accountBtn').hidden = !u;
     const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? ROLE_NAMES[u.role] : 'Mode agent';
@@ -563,6 +597,7 @@
   }
   function setAgent(on) {
     state.agent = !!on && state.canEdit;
+    document.body.classList.toggle('agent-on', state.agent);
     try { sessionStorage.setItem('d8-agent', state.agent ? '1' : '0'); } catch (e) { }
     $('agentbar').hidden = !state.agent;
     $('agentBtn').hidden = API ? state.agent : (!state.canEdit || state.agent);
@@ -602,7 +637,8 @@
     fl.append(deal, sort, q);
     renderGrid();
     const n = d.listings.filter(l => l.status === 'disponible').length;
-    $('catSub').textContent = 'Los Santos · ' + (n === 0 ? 'aucun bien disponible' : n === 1 ? '1 bien disponible' : n + ' biens disponibles');
+    $('catSub').textContent = n === 0 ? 'Aucun bien disponible pour le moment' : n === 1 ? '1 bien disponible à Los Santos' : n + ' biens disponibles à Los Santos';
+    renderHero();
   }
   function renderGrid() {
     const d = state.data, f = state.filter, grid = $('grid');
@@ -627,8 +663,8 @@
       l.points.length ? el('span', { class: 'sunbadge' }, ['360°', el('small', { text: l.points.length + (l.points.length > 1 ? ' pièces' : ' pièce') })]) : null
     ]);
     const body = el('div', { class: 'body' }, [
-      el('p', { class: 'eyebrow', text: [l.type, DEALS[l.deal]].filter(Boolean).join(' · ') }),
-      el('h2', { text: l.name || 'Sans nom' }),
+      el('p', { class: 'eyebrow', text: kindOf(l) }),
+      el('h3', { text: l.name || 'Sans nom' }),
       priceEl(l),
       optionEl(l)
     ]);
@@ -833,7 +869,7 @@
   }
   function setVisitTexts() {
     const l = visit.listing; if (!l) return;
-    $('vEyebrow').textContent = [l.type, DEALS[l.deal]].filter(Boolean).join(' · ');
+    $('vEyebrow').textContent = kindOf(l);
     $('vName').textContent = l.name;
     const pr = priceParts(l), pe = $('vPrice');
     pe.className = 'price' + (pr.ask ? ' ask' : ''); pe.innerHTML = '';
