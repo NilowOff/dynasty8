@@ -1,0 +1,93 @@
+{
+ "version": 1,
+ "updated": "2026-10-13T02:30:00.000Z",
+ "listings": [
+  {
+   "id": "bureau-1",
+   "name": "Bureau #1",
+   "type": "Bureau",
+   "deal": "vente",
+   "price": null,
+   "period": "semaine",
+   "status": "disponible",
+   "district": "",
+   "surface": null,
+   "rooms": null,
+   "garage": null,
+   "description": "",
+   "features": [],
+   "cover": "preview.jpg",
+   "start": "chambre",
+   "order": 0,
+   "created": "2026-10-13",
+   "points": [
+    {
+     "id": "chambre",
+     "name": "Chambre",
+     "image": "pano.jpg",
+     "imageSmall": "pano_2k.jpg",
+     "north": 0.4,
+     "yaw": 0,
+     "pitch": -4,
+     "pins": [
+      {
+       "id": "p1",
+       "yaw": -16,
+       "pitch": 14,
+       "label": "Baie vitrée",
+       "text": "Vue dégagée sur le centre-ville"
+      },
+      {
+       "id": "p2",
+       "yaw": 180,
+       "pitch": 6,
+       "label": "Chambre",
+       "text": "Lit double, éclairage indirect"
+      }
+     ],
+     "links": [
+      {
+       "id": "l1",
+       "target": "piece",
+       "yaw": 67,
+       "pitch": -23
+      }
+     ]
+    },
+    {
+     "id": "piece",
+     "name": "Pièce de vie",
+     "image": "pdv.jpg",
+     "imageSmall": "pdv_2k.jpg",
+     "north": -3,
+     "yaw": 0,
+     "pitch": -4,
+     "pins": [
+      {
+       "id": "p3",
+       "yaw": -102,
+       "pitch": 5,
+       "label": "Cuisine",
+       "text": "Îlot central, double four"
+      },
+      {
+       "id": "p4",
+       "yaw": 87,
+       "pitch": -12,
+       "label": "Salon",
+       "text": "Grand canapé d’angle"
+      }
+     ],
+     "links": [
+      {
+       "id": "l2",
+       "target": "chambre",
+       "yaw": -68,
+       "pitch": -16.5
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
