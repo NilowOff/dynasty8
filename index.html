@@ -157,7 +157,12 @@ button { cursor: pointer; }
 .price { margin: 4px 0 0; font-family: var(--label); font-weight: 700; font-size: 26px; color: var(--green); font-variant-numeric: tabular-nums; letter-spacing: .01em; }
 .price small { font-size: 16px; font-weight: 600; color: var(--ink-2); }
 .price.ask { font-size: 20px; color: var(--ink-2); }
-.specs { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 0; color: var(--ink-2); font-family: var(--label); font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+.opt { margin: 3px 0 0; font-family: var(--label); font-weight: 600; font-size: 15px; color: var(--ink-2); font-variant-numeric: tabular-nums; line-height: 1.3; }
+.opt::before {
+  content: '+'; display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: 7px; border-radius: 50%; vertical-align: -3px;
+  background: var(--sun); color: var(--ink); font-family: var(--body); font-weight: 700; font-size: 15px; line-height: 1;
+}
+.opt b { color: var(--green); font-weight: 700; white-space: nowrap; }
 .card .agent-actions { display: flex; gap: 8px; padding: 0 16px 14px; }
 .card .agent-actions .btn { min-height: 34px; font-size: 14px; }
 .card.new {
@@ -201,9 +206,10 @@ button { cursor: pointer; }
 .vpaper .room { margin: 0; font-family: var(--label); font-size: 15px; font-weight: 600; color: var(--ink-2); }
 .vpaper .room::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: var(--sun); vertical-align: 1px; }
 .vpaper .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
-.vpaper .price { margin: 0; font-size: 22px; }
+.vpaper .price { margin: 0; font-size: 22px; white-space: nowrap; }
 .vpaper .price.ask { font-size: 17px; }
 .vpaper .btn { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.vpaper .opt { font-size: 14px; margin: 0; }
 
 .vcontrols { position: absolute; z-index: 5; top: calc(env(safe-area-inset-top, 0px) + var(--gutter)); right: calc(env(safe-area-inset-right, 0px) + var(--gutter)); display: flex; gap: 8px; }
 .rbtn {
@@ -374,6 +380,8 @@ button { cursor: pointer; }
   .top .logo { height: 42px; }
   .grid { gap: 16px; }
   .vpaper .brand img { width: 108px; }
+  .vpaper .price { font-size: 19px; }
+  .vpaper .price small { font-size: 14px; }
   .vtools button { min-width: 60px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -437,6 +445,7 @@ button { cursor: pointer; }
           <p class="price" id="vPrice"></p>
           <button class="btn" id="infoBtn" type="button">Infos</button>
         </div>
+        <p class="opt" id="vOption" hidden></p>
       </div>
     </div>
   </div>

@@ -872,9 +872,41 @@
     return { panos, capPixels, score, make };
   }
 
+  // plafond ou sol ? on compare les teintes du centre du screen avec le haut et le bas du tour
+  // (un plafond uni et sombre se « colle » sinon facilement sur un carrelage, et inversement)
+  function sidePrior(cam, pano) {
+    const NB = 16, hist = () => new Float64Array(NB);
+    const add = (h, v) => { h[Math.min(NB - 1, Math.max(0, (v / 256 * NB) | 0))]++; };
+    const hc = hist();
+    const x0 = Math.round(cam.aw * 0.2), x1 = Math.round(cam.aw * 0.8), y0 = Math.round(cam.ah * 0.2), y1 = Math.round(cam.ah * 0.8);
+    for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) add(hc, cam.gray[y * cam.aw + x]);
+    const { W, H, mask, gray } = pano, band = Math.max(3, Math.round(H * 0.035));
+    const ht = hist(), hb = hist();
+    let nt = 0, nb = 0;
+    for (let x = 0; x < W; x++) {
+      let top = -1, bot = -1;
+      for (let y = 0; y < H; y++) if (mask[y * W + x]) { top = y; break; }
+      for (let y = H - 1; y >= 0; y--) if (mask[y * W + x]) { bot = y; break; }
+      if (top < 0) continue;
+      for (let y = top; y < Math.min(H, top + band); y++) if (mask[y * W + x]) { add(ht, gray[y * W + x]); nt++; }
+      for (let y = bot; y > Math.max(-1, bot - band); y--) if (mask[y * W + x]) { add(hb, gray[y * W + x]); nb++; }
+    }
+    if (nt < 300 || nb < 300) return null;
+    const norm = h => { const s = h.reduce((a, b) => a + b, 0) || 1; return h.map(v => v / s); };
+    const bc = (a, b) => { let s = 0; for (let i = 0; i < NB; i++) s += Math.sqrt(a[i] * b[i]); return s; };
+    const c = norm(hc), t = norm(ht), b = norm(hb);
+    return { up: 1 - bc(c, t), down: 1 - bc(c, b) };
+  }
+
   async function solvePole(S, cam, progress) {
-    const sides = cam.role === 'up' ? [-1] : cam.role === 'down' ? [1] : [-1, 1];
     const T = poleTools(S, cam, [[512, 256], [1024, 512]]);
+    let sides = cam.role === 'up' ? [-1] : cam.role === 'down' ? [1] : [-1, 1];
+    if (sides.length === 2) {
+      const pr = sidePrior(cam, T.panos[512]);
+      cam.sidePrior = pr;
+      if (pr && pr.up + 0.12 < pr.down) sides = [-1];
+      else if (pr && pr.down + 0.12 < pr.up) sides = [1];
+    }
     let best = { s: -2 };
     let step = 0; const steps = sides.length * 60;
     const MAXT = 24 * DEG;

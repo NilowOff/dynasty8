@@ -5,15 +5,11 @@
   {
    "id": "bureau-1",
    "name": "Bureau #1",
-   "type": "Bureau",
+   "type": "Bureaux",
    "deal": "vente",
    "price": null,
    "period": "semaine",
    "status": "disponible",
-   "district": "",
-   "surface": null,
-   "rooms": null,
-   "garage": null,
    "description": "",
    "features": [],
    "cover": "preview.jpg",
@@ -87,7 +83,8 @@
       }
      ]
     }
-   ]
+   ],
+   "garagePrice": null
   }
  ]
 }

@@ -8,7 +8,8 @@
   const API = ((document.querySelector('meta[name="d8-api"]') || {}).content || '').trim().replace(/\/+$/, '');
   const SHARE_BASE = API ? location.origin + location.pathname.replace(/index\.html?$/i, '') : 'https://claude.ai/artifact/7eJ2mP66hxVcGT49Gkc4ww';
   const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant' };
-  const TYPES = ['Appartement', 'Maison', 'Villa', 'Bureau', 'Entrepôt', 'Garage', 'Commerce', 'Terrain'];
+  const TYPES = ['Maison', 'Appartement', 'Bureaux', 'Entrepôt', 'Motel/Hôtel', 'Location Pro', 'Intérieur vide'];
+  const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
   const STATUSES = { disponible: 'Disponible', reserve: 'Réservé', vendu: 'Vendu', loue: 'Loué' };
   const DEALS = { vente: 'Vente', location: 'Location' };
   const PERIODS = { semaine: 'semaine', mois: 'mois', jour: 'jour' };
@@ -16,8 +17,8 @@
   const FALLBACK = {
     version: 1, updated: '2026-10-13T02:30:00.000Z',
     listings: [{
-      id: 'bureau-1', name: 'Bureau #1', type: 'Bureau', deal: 'vente', price: null, period: 'semaine', status: 'disponible',
-      district: '', surface: null, rooms: null, garage: null, description: '', features: [],
+      id: 'bureau-1', name: 'Bureau #1', type: 'Bureaux', deal: 'vente', price: null, period: 'semaine', status: 'disponible',
+      garagePrice: null, description: '', features: [],
       cover: 'preview.jpg', start: 'chambre', order: 0, created: '2026-10-13',
       points: [
         {
@@ -91,6 +92,16 @@
   function priceParts(l) {
     if (l.price === null || l.price === undefined || l.price === '' || isNaN(+l.price)) return { text: 'Prix sur demande', ask: true };
     return { text: nf.format(+l.price) + ' $', per: l.deal === 'location' ? ' / ' + (PERIODS[l.period] || 'semaine') : '' };
+  }
+  // option garage : supplément affiché sous le prix (« + Option garage : +750 $ / semaine »)
+  function optionText(l) {
+    const g = l.garagePrice;
+    if (g === null || g === undefined || g === '' || isNaN(+g) || +g <= 0) return null;
+    return '+' + nf.format(+g) + ' $' + (l.deal === 'location' ? ' / ' + (PERIODS[l.period] || 'semaine') : '');
+  }
+  function optionEl(l) {
+    const t = optionText(l);
+    return t ? el('p', { class: 'opt' }, ['Option garage : ', el('b', { text: t })]) : null;
   }
   function priceEl(l, cls) {
     const p = priceParts(l);
@@ -315,7 +326,8 @@
   // le serveur renvoie le catalogue fusionné (avec les changements des autres employés)
   function adoptServerData(d) {
     normalize(d);
-    const same = JSON.stringify(d.listings) === JSON.stringify(state.data.listings);
+    const canon = x => JSON.stringify(x, (k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
+    const same = canon(d.listings) === canon(state.data.listings);
     if (same) {
       Object.keys(state.data).forEach(k => { if (k !== 'listings') delete state.data[k]; });
       Object.keys(d).forEach(k => { if (k !== 'listings') state.data[k] = d[k]; });
@@ -586,7 +598,7 @@
       [['all', 'Vente et location'], ['vente', 'Vente'], ['location', 'Location']].map(([v, t]) => el('option', { value: v, text: t, selected: f.deal === v })));
     const sort = el('select', { id: 'fSort', 'aria-label': 'Tri', onchange: e => { f.sort = e.target.value; renderCatalog(); } },
       [['recent', 'Plus récents'], ['asc', 'Prix croissant'], ['desc', 'Prix décroissant']].map(([v, t]) => el('option', { value: v, text: t, selected: f.sort === v })));
-    const q = el('input', { id: 'fSearch', type: 'search', placeholder: 'Nom, quartier…', value: f.q, 'aria-label': 'Rechercher', oninput: e => { f.q = e.target.value; renderGrid(); } });
+    const q = el('input', { id: 'fSearch', type: 'search', placeholder: 'Rechercher un bien…', value: f.q, 'aria-label': 'Rechercher', oninput: e => { f.q = e.target.value; renderGrid(); } });
     fl.append(deal, sort, q);
     renderGrid();
     const n = d.listings.filter(l => l.status === 'disponible').length;
@@ -597,7 +609,7 @@
     grid.innerHTML = '';
     let items = d.listings.filter(l =>
       (f.type === 'all' || l.type === f.type) && (f.deal === 'all' || l.deal === f.deal) &&
-      (!f.q || (l.name + ' ' + (l.district || '') + ' ' + (l.type || '')).toLowerCase().includes(f.q.toLowerCase())) &&
+      (!f.q || (l.name + ' ' + (l.type || '')).toLowerCase().includes(f.q.toLowerCase())) &&
       (state.agent || l.points.length > 0));
     const pv = l => (l.price === null || l.price === '' || isNaN(+l.price)) ? null : +l.price;
     if (f.sort === 'recent') items.sort((a, b) => (b.order || 0) - (a.order || 0));
@@ -614,15 +626,11 @@
       el('span', { class: 'status ' + l.status, text: STATUSES[l.status] || 'Disponible' }),
       l.points.length ? el('span', { class: 'sunbadge' }, ['360°', el('small', { text: l.points.length + (l.points.length > 1 ? ' pièces' : ' pièce') })]) : null
     ]);
-    const specs = [];
-    if (l.surface) specs.push(nf.format(+l.surface) + ' m²');
-    if (l.rooms) specs.push(l.rooms + (+l.rooms > 1 ? ' pièces' : ' pièce'));
-    if (l.garage) specs.push(l.garage + (+l.garage > 1 ? ' places de garage' : ' place de garage'));
     const body = el('div', { class: 'body' }, [
-      el('p', { class: 'eyebrow', text: [l.type, DEALS[l.deal], l.district].filter(Boolean).join(' · ') }),
+      el('p', { class: 'eyebrow', text: [l.type, DEALS[l.deal]].filter(Boolean).join(' · ') }),
       el('h2', { text: l.name || 'Sans nom' }),
       priceEl(l),
-      specs.length ? el('p', { class: 'specs' }, specs.map(s => el('span', { text: s }))) : null
+      optionEl(l)
     ]);
     const link = el('a', { href: '#' + l.id, class: 'cardlink', style: { display: 'flex', flexDirection: 'column', color: 'inherit', textDecoration: 'none' } }, [photo, body]);
     if (!l.points.length) {
@@ -644,7 +652,7 @@
     const name = 'Nouveau bien';
     const l = {
       id: uniqueId(slugify(name), d.listings.map(x => x.id)), name, type: 'Appartement', deal: 'vente', price: null, period: 'semaine',
-      status: 'disponible', district: '', surface: null, rooms: null, garage: null, description: '', features: [],
+      status: 'disponible', garagePrice: null, description: '', features: [],
       cover: null, start: null, order: Math.max(0, ...d.listings.map(x => x.order || 0)) + 1, created: new Date().toISOString().slice(0, 10), points: []
     };
     if (me()) l.createdBy = me();
@@ -686,10 +694,11 @@
     periodField.hidden = l.deal !== 'location';
     const price = el('input', { id: 'lPrice', type: 'number', min: '0', step: '1000', inputmode: 'numeric', value: l.price ?? '', placeholder: 'Vide = prix sur demande', oninput: e => upd('price', num(e.target.value)) });
     const status = el('select', { id: 'lStatus', onchange: e => upd('status', e.target.value) }, Object.entries(STATUSES).map(([v, t]) => el('option', { value: v, text: t, selected: l.status === v })));
-    const district = el('input', { id: 'lDistrict', value: l.district || '', placeholder: 'Ex. Vinewood Hills', oninput: e => upd('district', e.target.value) });
-    const surface = el('input', { id: 'lSurface', type: 'number', min: '0', value: l.surface ?? '', oninput: e => upd('surface', num(e.target.value)) });
-    const rooms = el('input', { id: 'lRooms', type: 'number', min: '0', value: l.rooms ?? '', oninput: e => upd('rooms', num(e.target.value)) });
-    const garage = el('input', { id: 'lGarage', type: 'number', min: '0', value: l.garage ?? '', oninput: e => upd('garage', num(e.target.value)) });
+    const garageHelp = () => 'Supplément si le client prend un garage' + (l.deal === 'location' ? ', par ' + (PERIODS[l.period] || 'semaine') : '') + '. Laisse vide s’il n’y a pas d’option garage.';
+    const garage = el('input', { id: 'lGarage', type: 'number', min: '0', step: '50', inputmode: 'numeric', value: l.garagePrice ?? '', placeholder: 'Pas d’option garage', oninput: e => upd('garagePrice', num(e.target.value)) });
+    const garageField = field('Option garage ($)', garage, garageHelp());
+    const refreshGarageHelp = () => { const h = garageField.querySelector('.help'); if (h) h.textContent = garageHelp(); };
+    deal.addEventListener('change', refreshGarageHelp); period.addEventListener('change', refreshGarageHelp);
     const desc = el('textarea', { id: 'lDesc', oninput: e => upd('description', e.target.value) }); desc.value = l.description || '';
     const feats = el('input', { id: 'lFeats', value: (l.features || []).join(', '), placeholder: 'Ex. Vue sur la ville, Garage privé', oninput: e => upd('features', e.target.value.split(',').map(s => s.trim()).filter(Boolean)) });
     const roomsBox = el('div', { class: 'roomlist' });
@@ -704,7 +713,7 @@
     };
     renderRooms();
     const ro = !canEditListing(l);
-    if (ro) [name, type, period, deal, price, status, district, surface, rooms, garage, desc, feats].forEach(i => { i.disabled = true; });
+    if (ro) [name, type, period, deal, price, status, garage, desc, feats].forEach(i => { i.disabled = true; });
     openSheet(isNew ? 'Nouveau bien' : ro ? l.name : 'Modifier le bien', [
       isNew ? el('p', { class: 'note', text: 'Remplis les infos, puis ajoute les pièces avec tes screens. Pense à enregistrer à la fin.' }) : null,
       ro ? el('p', { class: 'note', text: 'Ce bien a été créé par ' + (l.createdBy || 'un admin') + ' : tu peux y ajouter des pièces et choisir la pièce de départ, mais pas modifier ses infos ni son prix.' }) : null,
@@ -712,9 +721,7 @@
       el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
       el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
       field('Prix ($)', price, 'Laisse vide pour afficher « Prix sur demande ».'),
-      field('Quartier ou adresse', district),
-      el('div', { class: 'row2' }, [field('Surface (m²)', surface), field('Pièces', rooms)]),
-      field('Places de garage', garage),
+      garageField,
       field('Description', desc),
       field('Points forts', feats, 'Sépare-les par des virgules.'),
       l.points.length > 1 ? startPicker(l, renderRooms) : null,
@@ -826,11 +833,14 @@
   }
   function setVisitTexts() {
     const l = visit.listing; if (!l) return;
-    $('vEyebrow').textContent = [l.type, DEALS[l.deal], l.district].filter(Boolean).join(' · ');
+    $('vEyebrow').textContent = [l.type, DEALS[l.deal]].filter(Boolean).join(' · ');
     $('vName').textContent = l.name;
     const pr = priceParts(l), pe = $('vPrice');
     pe.className = 'price' + (pr.ask ? ' ask' : ''); pe.innerHTML = '';
     pe.append(pr.text); if (pr.per) pe.append(el('small', { text: pr.per }));
+    const ot = optionText(l), vo = $('vOption');
+    vo.hidden = !ot; vo.innerHTML = '';
+    if (ot) vo.append('Option garage : ', el('b', { text: ot }));
     if (visit.point) {
       const i = l.points.indexOf(visit.point);
       $('vRoom').textContent = visit.point.name + (l.points.length > 1 ? ' · ' + (i + 1) + '/' + l.points.length : '');
@@ -982,8 +992,6 @@
     const kv = [];
     const add = (k, v) => { if (v !== null && v !== undefined && v !== '') kv.push(el('div', {}, [el('dt', { text: k }), el('dd', { text: v })])); };
     add('Type', l.type); add('Transaction', DEALS[l.deal]); add('Statut', STATUSES[l.status]);
-    add('Surface', l.surface ? nf.format(+l.surface) + ' m²' : null); add('Pièces', l.rooms); add('Garage', l.garage ? l.garage + ' place' + (+l.garage > 1 ? 's' : '') : null);
-    add('Quartier', l.district);
     const share = SHARE_BASE + '#' + l.id;
     const shareInput = el('input', { id: 'shareLink', value: share, readonly: true, onfocus: e => e.target.select() });
     const rooms = el('div', { class: 'roomlist' }, l.points.map(p => el('button', {
@@ -991,6 +999,7 @@
     }, [el('span', { class: 'thumb', style: { backgroundImage: 'url("' + mediaURL(p.imageSmall || p.image) + '")' } }), el('div', {}, [el('b', { text: p.name })]), el('span', {})])));
     openSheet(l.name, [
       priceEl(l),
+      optionEl(l),
       el('dl', { class: 'kv' }, kv),
       l.description ? el('p', { class: 'desc', text: l.description }) : null,
       (l.features || []).length ? el('div', { class: 'tags' }, l.features.map(t => el('span', { text: t }))) : null,
@@ -1456,7 +1465,13 @@
     }
   }
 
-  function normalize(d) { d.listings.forEach(l => { l.points = l.points || []; l.points.forEach(p => { p.pins = p.pins || []; p.links = p.links || []; }); }); }
+  function normalize(d) {
+    d.listings.forEach(l => {
+      if (OLD_TYPES[l.type]) l.type = OLD_TYPES[l.type];
+      delete l.district; delete l.surface; delete l.rooms; delete l.garage;
+      l.points = l.points || []; l.points.forEach(p => { p.pins = p.pins || []; p.links = p.links || []; });
+    });
+  }
 
   // ------------------------------------------------------------------ navigation
   function route() {

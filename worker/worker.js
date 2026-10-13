@@ -7,6 +7,7 @@ const STATIC_RE = /^[a-z0-9_-]{1,60}\.(jpg|png)$/i;
 const ID_RE = /^[a-z0-9-]{1,60}$/;
 const USER_RE = /^[a-z0-9._-]{3,24}$/;
 const ROLES = ['admin', 'gerant'];
+const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
 const ITER = 5000;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 const MAX_IMAGE = 20 * 1024 * 1024;
@@ -147,7 +148,9 @@ async function save(request, env, me) {
 }
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
-const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// comparaison indépendante de l'ordre des clés
+const canon = x => JSON.stringify(x, (k, v) => isObj(v) ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
+const eq = (a, b) => canon(a) === canon(b);
 const isIdArray = x => Array.isArray(x) && x.every(o => isObj(o) && typeof o.id === 'string');
 
 // fusion à trois : ce que l'employé a changé (base → mine) est appliqué sur la version actuelle (theirs)
@@ -197,8 +200,10 @@ function sanitize(d, lenient) {
     l.name = str(l.name, 120); l.type = str(l.type, 40); l.deal = l.deal === 'location' ? 'location' : 'vente';
     l.period = ['semaine', 'mois', 'jour'].includes(l.period) ? l.period : 'semaine';
     l.status = ['disponible', 'reserve', 'vendu', 'loue'].includes(l.status) ? l.status : 'disponible';
-    l.price = numOrNull(l.price); l.surface = numOrNull(l.surface); l.rooms = numOrNull(l.rooms); l.garage = numOrNull(l.garage);
-    l.district = str(l.district, 120); l.description = str(l.description, 4000);
+    if (OLD_TYPES[l.type]) l.type = OLD_TYPES[l.type];
+    l.price = numOrNull(l.price); l.garagePrice = numOrNull(l.garagePrice);
+    delete l.district; delete l.surface; delete l.rooms; delete l.garage;
+    l.description = str(l.description, 4000);
     l.features = Array.isArray(l.features) ? l.features.map(f => str(f, 80)).filter(Boolean).slice(0, 30) : [];
     l.cover = imgPath(l.cover); l.order = isFinite(+l.order) ? +l.order : 0; l.created = str(l.created, 30);
     if (l.createdBy !== undefined) l.createdBy = str(l.createdBy, 24);
