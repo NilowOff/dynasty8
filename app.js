@@ -76,6 +76,8 @@
     image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></svg>',
+    left: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    right: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
     arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>'
   };
   function iconBtn(icon, label, onclick) { return el('button', { type: 'button', 'aria-label': label, title: label, html: ICON[icon], onclick }); }
@@ -137,7 +139,6 @@
     pano.style.setProperty('--pan', Math.round(tile / 22) + 's');
   }
   window.addEventListener('resize', sizeHero);
-  if ($('heroGo')) $('heroGo').addEventListener('click', () => $('catalog').scrollIntoView({ block: 'start' }));
 
   function priceEl(l, cls) {
     const p = priceParts(l);
@@ -364,9 +365,12 @@
     normalize(d);
     const canon = x => JSON.stringify(x, (k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
     const same = canon(d.listings) === canon(state.data.listings);
+    const siteSame = canon(d.site) === canon(state.data.site);
+    if (!siteSame && !$('sheet').hidden) closeSheet();
     if (same) {
-      Object.keys(state.data).forEach(k => { if (k !== 'listings') delete state.data[k]; });
-      Object.keys(d).forEach(k => { if (k !== 'listings') state.data[k] = d[k]; });
+      const keep = k => k === 'listings' || (k === 'site' && siteSame);
+      Object.keys(state.data).forEach(k => { if (!keep(k)) delete state.data[k]; });
+      Object.keys(d).forEach(k => { if (!keep(k)) state.data[k] = d[k]; });
     } else {
       const lid = visit.listing && visit.listing.id, pid = visit.point && visit.point.id;
       state.data = d;
@@ -374,13 +378,13 @@
       if (lid) {
         const l = listing(lid);
         if (l && l.points.length) { visit.listing = l; visit.point = pointOf(l, pid) || null; if (visit.point) applyPoint(visit.point); setVisitTexts(); refreshVisitAgent(); }
-        else location.hash = '';
+        else leaveVisit();
       }
       toast('Enregistré. Le catalogue inclut aussi les derniers changements des autres employés.', 5000);
     }
     state.saved = JSON.stringify(state.data);
     state.baseUpdated = state.data.updated || '';
-    renderCatalog();
+    renderCatalog(); refreshPage();
   }
   async function discardChanges() {
     for (const u of state.urls.values()) URL.revokeObjectURL(u);
@@ -391,7 +395,7 @@
     state.data = d; state.saved = JSON.stringify(d); state.baseUpdated = d.updated || '';
     try { await idbOp('readwrite', st => st.delete('draft')); } catch (e) { }
     closeSheet(); renderCatalog();
-    if (visit.listing) { const l = listing(visit.listing.id); visit.listing = null; visit.point = null; if (l && l.points.length) openVisit(l); else location.hash = ''; }
+    if (visit.listing) { const l = listing(visit.listing.id); visit.listing = null; visit.point = null; if (l && l.points.length) openVisit(l); else leaveVisit(); }
     updateAgentBar();
     toast('Modifications annulées.');
   }
@@ -447,6 +451,7 @@
         const s = await api('POST', setupMode ? '/api/setup' : '/api/login', { username: user.value.trim(), password: pass.value });
         useSession(s);
         closeSheet(); setAgent(true); offerDraft();
+        if (currentPage !== 'catalogue' && !visit.listing) location.hash = '#/catalogue';
         toast('Connecté : ' + s.user.username + ' (' + ROLE_NAMES[s.user.role] + ').');
       } catch (e) { err.textContent = e.message; err.hidden = false; }
       btn.disabled = false;
@@ -604,7 +609,7 @@
     $('agentbar').hidden = !state.agent;
     $('agentBtn').hidden = API ? state.agent : (!state.canEdit || state.agent);
     updateStaffUI();
-    renderCatalog();
+    renderCatalog(); refreshPage();
     if (!$('visit').hidden) refreshVisitAgent();
     updateAgentBar();
   }
@@ -625,11 +630,12 @@
   function renderCatalog() {
     const d = state.data; if (!d) return;
     const f = state.filter;
-    const types = TYPES.filter(t => d.listings.some(l => l.type === t));
+    const types = TYPES.filter(t => d.listings.some(l => l.type === t && (state.agent || l.points.length)) || f.type === t);
     const fl = $('filters'); fl.innerHTML = '';
-    const chip = (label, val) => el('button', { type: 'button', class: 'chip', 'aria-pressed': String(f.type === val), text: label, onclick: () => { f.type = val; renderCatalog(); } });
+    const chip = (label, val) => el('button', { type: 'button', class: 'chip', 'aria-pressed': String(f.type === val), text: label, onclick: () => { location.hash = val === 'all' ? '#/catalogue' : '#/catalogue/' + typeSlug(val); } });
     fl.append(chip('Tous', 'all'));
-    types.forEach(t => fl.append(chip(t, t)));
+    types.forEach(t => fl.append(chip(typePlural(t), t)));
+    $('catTitle').textContent = f.type === 'all' ? 'Catalogue' : typePlural(f.type);
     fl.append(el('span', { class: 'sep' }));
     const deal = el('select', { id: 'fDeal', 'aria-label': 'Transaction', onchange: e => { f.deal = e.target.value; renderCatalog(); } },
       [['all', 'Vente et location'], ['vente', 'Vente'], ['location', 'Location']].map(([v, t]) => el('option', { value: v, text: t, selected: f.deal === v })));
@@ -640,7 +646,7 @@
     renderGrid();
     const n = d.listings.filter(l => l.status === 'disponible').length;
     $('catSub').textContent = n === 0 ? 'Aucun bien disponible pour le moment' : n === 1 ? '1 bien disponible à Los Santos' : n + ' biens disponibles à Los Santos';
-    renderHero();
+    renderNav(); renderHomeLatest(); renderHero();
   }
   function renderGrid() {
     const d = state.data, f = state.filter, grid = $('grid');
@@ -658,6 +664,7 @@
     }
     items.forEach(l => grid.append(cardOf(l)));
     $('empty').hidden = items.length > 0 || state.agent;
+    $('empty').textContent = f.type !== 'all' && !f.q && f.deal === 'all' ? 'Aucun bien dans cette catégorie pour le moment.' : 'Aucun bien ne correspond à ces critères.';
   }
   function cardOf(l) {
     const photo = el('div', { class: 'photo', style: l.cover ? { backgroundImage: 'url("' + mediaURL(l.cover) + '")' } : {} }, [
@@ -785,7 +792,7 @@
     mediaOfListing(l).forEach(dropMedia);
     state.data.listings = state.data.listings.filter(x => x !== l);
     closeSheet();
-    if (visit.listing === l) { location.hash = ''; }
+    if (visit.listing === l) leaveVisit();
     markDirty(); renderCatalog();
   }
 
@@ -1000,7 +1007,7 @@
     if (e) travelTo(e.link);
   }
 
-  $('backBtn').addEventListener('click', () => { location.hash = ''; });
+  $('backBtn').addEventListener('click', leaveVisit);
   $('infoBtn').addEventListener('click', openInfoSheet);
   $('rotateBtn').addEventListener('click', () => {
     const v = ensureViewer(); v.autoRotate = !v.autoRotate;
@@ -1238,7 +1245,7 @@
     l.points.forEach(q => { q.links = q.links.filter(k => k.target !== p.id); });
     if (l.start === p.id) l.start = l.points[0] ? l.points[0].id : null;
     markDirty(); renderCatalog();
-    if (!l.points.length) { closeSheet(); location.hash = ''; return; }
+    if (!l.points.length) { closeSheet(); leaveVisit(); return; }
     if (visit.point === p) { visit.point = null; await openVisit(l, l.start); }
     else buildLinks();
     rerender && rerender();
@@ -1509,15 +1516,421 @@
       delete l.district; delete l.surface; delete l.rooms; delete l.garage;
       l.points = l.points || []; l.points.forEach(p => { p.pins = p.pins || []; p.links = p.links || []; });
     });
+    fillSite(d);
   }
+
+  // ------------------------------------------------------------------ pages du site
+  const TYPE_INFO = {
+    'Maison': { plural: 'Maisons', slug: 'maisons' },
+    'Appartement': { plural: 'Appartements', slug: 'appartements' },
+    'Bureaux': { plural: 'Bureaux', slug: 'bureaux' },
+    'Entrepôt': { plural: 'Entrepôts', slug: 'entrepots' },
+    'Motel/Hôtel': { plural: 'Hôtel/Motel', slug: 'hotel-motel' },
+    'Location Pro': { plural: 'Locations PRO', slug: 'locations-pro' },
+    'Intérieur vide': { plural: 'Intérieurs vides', slug: 'interieurs-vides' }
+  };
+  const typePlural = t => (TYPE_INFO[t] || {}).plural || t;
+  const typeSlug = t => (TYPE_INFO[t] || {}).slug || slugify(t);
+  const typeFromSlug = s => TYPES.find(t => typeSlug(t) === s) || null;
+  const PAGE_TITLES = { accueil: 'Accueil', catalogue: 'Catalogue', informations: 'Informations', equipe: 'Qui sommes-nous ?', recrutements: 'Recrutements', calendrier: 'Calendrier', faq: 'Réponses FAQ' };
+
+  const SITE_DEFAULT = {
+    home: {
+      lead: 'Le **Dynasty 8** vous accompagne dans tous vos projets immobiliers à Los Santos et ses alentours.',
+      text: '**Location, achat ou recherche d’un bien**, notre équipe met son expertise à votre service afin de vous proposer des propriétés adaptées à vos envies et à votre budget.',
+      tagline: 'Votre projet, notre priorité. Votre futur commence ici.',
+      photos: ['accueil-1.jpg', 'accueil-2.jpg']
+    },
+    info: {
+      intro: 'Retrouvez ici toutes les informations utiles relatives au **Dynasty 8** : notre fonctionnement, nos services, nos tarifs, nos procédures ainsi que les renseignements nécessaires pour vos locations et achats immobiliers.',
+      warning: 'Avant d’effectuer une demande auprès du Dynasty 8, merci de vous assurer que votre nom et votre prénom sont correctement renseignés sur votre profil Intranet.',
+      note: 'Toute demande effectuée sans ces informations ne pourra pas être prise en compte.',
+      sections: [
+        { id: 's1', title: 'Demande de recrutement', text: 'Vous souhaitez rejoindre l’équipe du Dynasty 8 ? Pour que votre candidature puisse être étudiée, merci de nous transmettre les informations suivantes : nom et prénom, disponibilités, numéro de téléphone, photo de votre carte d’identité et photo de votre permis de conduire.\n\nVous pouvez également joindre un CV et/ou une lettre de motivation afin de nous présenter votre parcours, vos expériences et vos motivations. Cela constituera un véritable plus pour votre candidature.' },
+        { id: 's2', title: 'Demande de partenariat', text: 'Vous représentez une entreprise et souhaitez mettre en place un partenariat avec Dynasty 8 ? Présentez-nous votre entreprise, le partenariat que vous souhaitez proposer ainsi que les avantages et engagements envisagés pour chacune des parties.\n\nLa Direction étudiera votre proposition et reviendra vers vous afin d’échanger sur les différentes possibilités de collaboration.' },
+        { id: 's3', title: 'Contact Direction', text: 'Vous souhaitez échanger directement avec la Direction du Dynasty 8 ? Cette rubrique est réservée aux demandes nécessitant l’intervention de la direction : questions administratives, réclamations, propositions ou toute autre demande importante concernant l’agence.\n\nMerci de détailler au maximum votre demande afin que nous puissions vous répondre efficacement.' },
+        { id: 's4', title: 'Question immobilière', text: 'Vous souhaitez obtenir une estimation pour l’achat d’un bien ? Merci de nous transmettre : la localisation exacte de la résidence, plusieurs photos du logement ainsi que le nom ou la référence de l’intérieur que vous souhaitez y installer.\n\nPlus votre demande sera complète, plus nos agents pourront réaliser une estimation précise et adaptée à votre projet immobilier.\n\nUne fois l’estimation effectuée, si vous acceptez l’offre, merci d’envoyer une demande sur la centrale du Dynasty 8 lorsque l’agence est ouverte. Pensez à préciser dans votre demande qu’il s’agit d’un achat pour lequel une estimation a déjà été réalisée, afin que notre équipe puisse prendre en charge votre dossier rapidement.' }
+      ]
+    },
+    team: {
+      intro: 'Découvrez ici les visages qui font vivre le **Dynasty 8**. Retrouvez les membres de notre équipe, leurs fonctions et les personnes qui vous accompagnent au quotidien dans vos projets immobiliers.',
+      members: [
+        { id: 'm1', name: 'MIJARES Sofia', role: 'Patronne du D8 depuis le 20/08/2026', bio: 'J’ai repris le **Dynasty 8** avec l’envie de lui redonner toute son activité et de redorer son image. Petit à petit, je souhaite faire évoluer l’entreprise, construire une équipe investie et proposer à nos clients un accompagnement et des services de qualité. Aujourd’hui, je suis fière de pouvoir faire grandir le Dynasty et de lui donner un nouveau souffle !', photo: 'equipe-sofia.jpg' },
+        { id: 'm2', name: 'BOUCHARD Alya', role: 'Employé du D8 depuis le 24/04/2026', bio: '', photo: null },
+        { id: 'm3', name: 'ANGUS Juan', role: 'Employé du D8 depuis le 01/09/2026', bio: '', photo: null }
+      ]
+    },
+    recruit: {
+      open: false,
+      intro: 'Ici, vous pouvez vérifier à tout moment si les recrutements du **Dynasty 8** sont **ouverts** ou **fermés**. Le statut sera régulièrement mis à jour afin de vous informer lorsque de nouvelles places seront disponibles.\n\nSi les recrutements sont ouverts, vous pourrez déposer votre candidature directement via notre intranet.',
+      closedText: 'Merci à tous pour vos candidatures !',
+      openText: 'Déposez votre candidature directement via notre intranet.'
+    },
+    calendar: {
+      intro: 'Consultez les disponibilités du **Rooftop D8** et contactez-nous pour effectuer une demande de réservation.',
+      booked: {}
+    },
+    faq: {
+      intro: 'Retrouvez ici toutes les réponses aux questions posées sur la FAQ du **Dynasty 8**, afin de vous renseigner rapidement sur nos services, nos démarches ou autres questions.',
+      items: [
+        { id: 'q1', q: 'Puis-je occuper une location si aucun contrat n’a été signé ?', a: 'Non. Il est strictement interdit d’occuper une location sans l’autorisation et la présence du Dynasty 8. Toute occupation d’un bien sans autorisation est considérée comme du squattage de propriété.\n\nSi une maison ou un appartement n’a pas encore été libéré, même lorsque l’ancien locataire est décédé ou n’occupe plus les lieux, cela signifie qu’une procédure de libération du bien peut être en cours. Le Dynasty 8 doit respecter ces procédures et ne peut pas supprimer ou résilier un contrat comme bon lui semble.' },
+        { id: 'q2', q: 'Je n’ai plus accès à ma location, est-ce normal ?', a: 'Plusieurs raisons peuvent expliquer la perte d’accès à votre location. Pensez tout d’abord à vérifier chaque mois que les 1 $ de frais obligatoires ont bien été réglés. En cas de non-paiement, les huissiers peuvent récupérer les affaires présentes dans le logement et placer les véhicules qui s’y trouvent. Pour récupérer vos véhicules, il faudra faire une réclamation auprès des huissiers.\n\nEn cas d’absence beaucoup trop prolongée ou d’impayés, une procédure peut également être engagée auprès du gouvernement et des avocats. À l’issue de celle-ci, certaines locations peuvent être libérées et supprimées.' },
+        { id: 'q3', q: 'Comment puis-je payer mon loyer ?', a: 'Pour régler votre loyer, vous devez vous rendre directement au Dynasty 8 pendant les horaires d’ouverture. L’agence est généralement disponible **tous les jours entre 19h et 00h**.\n\nSi aucun agent n’est présent à l’accueil, il est possible que l’ensemble de l’équipe soit actuellement en rendez-vous ou en déplacement pour effectuer des locations. Si vous en avez la possibilité, nous vous invitons à patienter jusqu’au retour d’un agent.\n\nCertains jours, nos agents peuvent également être indisponibles en raison de congés ou d’événements imprévus. Nous vous remercions donc pour votre compréhension et vous invitons à vous présenter selon les disponibilités de l’agence.' }
+      ]
+    }
+  };
+  const clone = o => JSON.parse(JSON.stringify(o));
+  function fillSite(d) {
+    if (!d.site || typeof d.site !== 'object') { d.site = clone(SITE_DEFAULT); return; }
+    Object.keys(SITE_DEFAULT).forEach(k => { if (!d.site[k] || typeof d.site[k] !== 'object') d.site[k] = clone(SITE_DEFAULT[k]); });
+    if (!d.site.calendar.booked || typeof d.site.calendar.booked !== 'object') d.site.calendar.booked = {};
+  }
+  const site = () => state.data.site;
+
+  // texte avec paragraphes (ligne vide), retours à la ligne et **gras**
+  function inlineRich(node, text) {
+    String(text || '').split('\n').forEach((line, i) => {
+      if (i) node.append(el('br'));
+      line.split(/(\*\*[^*\n]+\*\*)/).forEach(part => {
+        if (/^\*\*[^*\n]+\*\*$/.test(part)) node.append(el('strong', { text: part.slice(2, -2) }));
+        else if (part) node.append(part);
+      });
+    });
+    return node;
+  }
+  function rich(text) {
+    const box = el('div', { class: 'rich' });
+    String(text || '').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean).forEach(par => box.append(inlineRich(el('p'), par)));
+    return box;
+  }
+  function fill(box, kids) { box.innerHTML = ''; kids.forEach(k => k && box.append(k)); }
+  const canEditSite = () => state.agent && isAdmin();
+  function editButton(page) {
+    if (!canEditSite()) return null;
+    return el('button', { type: 'button', class: 'btn sun editbtn', html: ICON.pencil + '<span>Modifier cette page</span>', onclick: () => EDITORS[page]() });
+  }
+  function pageHead(title, intro) { return el('div', { class: 'pagehead' }, [el('h1', { text: title }), intro ? rich(intro) : null]); }
+
+  let currentPage = 'accueil', lastPageHash = '#/';
+  function showPage(name) {
+    const changed = name !== currentPage;
+    currentPage = name;
+    document.querySelectorAll('#pages > .page').forEach(p => { p.hidden = p.dataset.page !== name; });
+    renderNav();
+    document.title = name === 'accueil' ? 'Dynasty 8 | Agence immobilière de Los Santos' : (name === 'catalogue' && state.filter.type !== 'all' ? typePlural(state.filter.type) : PAGE_TITLES[name]) + ' | Dynasty 8';
+    renderPage(name);
+    $('mainnav').classList.remove('open'); $('navToggle').setAttribute('aria-expanded', 'false');
+    if (changed) window.scrollTo(0, 0);
+  }
+  function renderPage(name) {
+    if (!state.data) return;
+    if (name === 'accueil') renderHome();
+    else if (name === 'catalogue') renderCatalog();
+    else if (name === 'informations') renderInfo();
+    else if (name === 'equipe') renderTeam();
+    else if (name === 'recrutements') renderRecruit();
+    else if (name === 'calendrier') renderCal();
+    else if (name === 'faq') renderFaq();
+  }
+  const refreshPage = () => renderPage(currentPage);
+
+  function renderNav() {
+    const m = $('ddMenu'); if (!m || !state.data) return;
+    const count = t => state.data.listings.filter(l => l.points.length && (t === 'all' || l.type === t)).length;
+    const link = (href, label, n, cur) => el('a', { href, 'aria-current': cur ? 'page' : null }, [label, n ? el('small', { text: String(n) }) : null]);
+    const onCat = currentPage === 'catalogue';
+    fill(m, [link('#/catalogue', 'Tous les biens', count('all'), onCat && state.filter.type === 'all'), el('hr')]
+      .concat(TYPES.map(t => link('#/catalogue/' + typeSlug(t), typePlural(t), count(t), onCat && state.filter.type === t))));
+    document.querySelectorAll('.mainnav > a, .mainnav .dd-top').forEach(a => {
+      if (a.dataset.page === currentPage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+  }
+  $('navToggle').addEventListener('click', () => {
+    const open = !$('mainnav').classList.contains('open');
+    $('mainnav').classList.toggle('open', open); $('navToggle').setAttribute('aria-expanded', String(open));
+  });
+
+  // ---- accueil
+  function renderHome() {
+    const s = site().home, photos = (s.photos || []).filter(Boolean).slice(0, 2);
+    const box = $('homeIntro');
+    box.classList.toggle('nophotos', !photos.length);
+    fill(box, [
+      el('div', {}, [editButton('accueil'), s.lead ? inlineRich(el('p', { class: 'lead' }), s.lead) : null, rich(s.text)]),
+      photos.length ? el('div', { class: 'photos' + (photos.length === 1 ? ' one' : '') }, photos.map(p => el('img', { src: mediaURL(p), alt: 'L’équipe du Dynasty 8', loading: 'lazy' }))) : null,
+      s.tagline ? el('p', { class: 'tagline', text: s.tagline }) : null
+    ]);
+    renderHomeLatest();
+    renderHero();
+  }
+  function renderHomeLatest() {
+    const g = $('homeGrid'); if (!g || !state.data) return;
+    const items = state.data.listings.filter(l => l.points.length).sort((a, b) => (b.order || 0) - (a.order || 0)).slice(0, 3);
+    $('homeLatest').hidden = !items.length;
+    fill(g, items.map(cardOf));
+  }
+
+  // ---- informations
+  const WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>';
+  function renderInfo() {
+    const s = site().info;
+    fill($('pInfo'), [
+      editButton('informations'),
+      pageHead('Informations', s.intro),
+      s.warning ? el('div', { class: 'callout', html: WARN }, [inlineRich(el('p'), s.warning + (s.note ? '*' : '')), s.note ? el('p', { class: 'fine', text: '*' + s.note }) : null]) : null,
+      el('div', { class: 'infogrid' }, s.sections.map(x => el('article', { class: 'infocard' }, [el('h2', { text: x.title }), rich(x.text)])))
+    ]);
+  }
+
+  // ---- qui sommes-nous
+  function renderTeam() {
+    const s = site().team;
+    fill($('pTeam'), [
+      editButton('equipe'),
+      pageHead('Qui sommes-nous ?', s.intro),
+      el('div', { class: 'team' }, s.members.map(m => el('article', { class: 'member' }, [
+        el('img', { class: 'ph' + (m.photo ? '' : ' logo'), src: m.photo ? mediaURL(m.photo) : 'logo.png', alt: m.photo ? m.name : '', loading: 'lazy' }),
+        el('div', {}, [el('h2', { text: m.name }), m.role ? el('p', { class: 'role', text: m.role }) : null, m.bio ? rich(m.bio) : null])
+      ])))
+    ]);
+  }
+
+  // ---- recrutements
+  function renderRecruit() {
+    const s = site().recruit;
+    fill($('pRecruit'), [
+      editButton('recrutements'),
+      pageHead('Recrutements', s.intro),
+      el('div', { class: 'recruit' + (s.open ? ' open' : ''), role: 'status' }, [
+        el('span', { class: 'stripe a' }), el('span', { class: 'stripe b' }),
+        el('img', { src: 'logo.png', alt: 'Dynasty 8', width: 180, height: 94 }),
+        el('p', { class: 'word', text: 'Recrutements' }),
+        el('p', { class: 'state', text: s.open ? 'Ouverts' : 'Fermés' }),
+        (s.open ? s.openText : s.closedText) ? el('p', { class: 'msg', text: s.open ? s.openText : s.closedText }) : null
+      ])
+    ]);
+  }
+
+  // ---- calendrier du rooftop
+  const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+  const DOWS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  const pad = n => String(n).padStart(2, '0');
+  const dayKey = (y, m, d) => y + '-' + pad(m + 1) + '-' + pad(d);
+  let calMonth = null;
+  function renderCal() {
+    const s = site().calendar;
+    if (!calMonth) { const n = new Date(); calMonth = new Date(n.getFullYear(), n.getMonth(), 1); }
+    const y = calMonth.getFullYear(), m = calMonth.getMonth();
+    const first = (new Date(y, m, 1).getDay() + 6) % 7, days = new Date(y, m + 1, 0).getDate();
+    const now = new Date(), todayKey = dayKey(now.getFullYear(), now.getMonth(), now.getDate());
+    const edit = canEditSite();
+    const cells = DOWS.map(d => el('div', { class: 'dow', text: d }));
+    for (let i = 0; i < first; i++) cells.push(el('div', { class: 'day out', 'aria-hidden': 'true' }));
+    for (let d = 1; d <= days; d++) {
+      const k = dayKey(y, m, d), booked = Object.prototype.hasOwnProperty.call(s.booked, k);
+      const cls = 'day' + (booked ? ' booked' : '') + (k === todayKey ? ' today' : '') + (k < todayKey ? ' past' : '');
+      const label = d + ' ' + MONTHS[m] + (booked ? ' : réservé' + (s.booked[k] ? ' (' + s.booked[k] + ')' : '') : ' : libre');
+      const kids = [el('span', { class: 'n', text: String(d) }), booked ? el('span', { class: 'what', text: s.booked[k] || 'Réservé' }) : null];
+      cells.push(edit ? el('button', { type: 'button', class: cls, 'aria-label': label, onclick: () => openDaySheet(k) }, kids) : el('div', { class: cls, 'aria-label': label }, kids));
+    }
+    const nav = (delta, label, icon) => iconBtn(icon, label, () => { calMonth = new Date(y, m + delta, 1); renderCal(); });
+    fill($('pCal'), [
+      editButton('calendrier'),
+      pageHead('Calendrier', s.intro),
+      edit ? el('p', { class: 'note', text: 'Clique sur un jour pour le marquer réservé ou libre, puis enregistre.' }) : null,
+      el('div', { class: 'cal' }, [
+        el('div', { class: 'cal-head' }, [
+          el('h2', {}, [MONTHS[m][0].toUpperCase() + MONTHS[m].slice(1) + ' ', el('span', { text: String(y) })]),
+          el('div', { class: 'cal-nav' }, [nav(-1, 'Mois précédent', 'left'), nav(1, 'Mois suivant', 'right')])
+        ]),
+        el('div', { class: 'cal-grid' }, cells),
+        el('div', { class: 'cal-legend' }, [el('span', {}, [el('i'), 'Libre']), el('span', {}, [el('i', { class: 'b' }), 'Réservé'])])
+      ])
+    ]);
+  }
+  function openDaySheet(k) {
+    const s = site().calendar, [y, mo, d] = k.split('-').map(Number);
+    const date = new Date(y, mo - 1, d).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const isBooked = () => Object.prototype.hasOwnProperty.call(s.booked, k);
+    const note = el('input', { id: 'dayNote', value: s.booked[k] || '', placeholder: 'Ex. Soirée privée', maxlength: 80 });
+    const noteField = field('Motif (facultatif)', note, 'Affiché dans la case du calendrier.');
+    const sw = el('div', { class: 'switch' });
+    const draw = () => {
+      fill(sw, [
+        el('button', { type: 'button', class: 'on', 'aria-pressed': String(!isBooked()), text: 'Libre', onclick: () => { delete s.booked[k]; markDirty(); renderCal(); draw(); } }),
+        el('button', { type: 'button', class: 'off', 'aria-pressed': String(isBooked()), text: 'Réservé', onclick: () => { s.booked[k] = note.value.trim(); markDirty(); renderCal(); draw(); } })
+      ]);
+      noteField.hidden = !isBooked();
+    };
+    note.addEventListener('input', () => { if (isBooked()) { s.booked[k] = note.value.trim(); markDirty(); renderCal(); } });
+    draw();
+    openSheet(date.charAt(0).toUpperCase() + date.slice(1), [sw, noteField], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+  }
+
+  // ---- réponses FAQ
+  const CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+  function renderFaq() {
+    const s = site().faq;
+    fill($('pFaq'), [
+      editButton('faq'),
+      pageHead('Réponses FAQ', s.intro),
+      el('div', { class: 'faq' }, s.items.map((x, i) => el('details', { open: i === 0 }, [
+        el('summary', {}, [el('span', { class: 'q', text: 'Q' }), el('span', { text: x.q }), el('span', { html: CHEV })]),
+        el('div', { class: 'answer' }, [rich(x.a)])
+      ])))
+    ]);
+  }
+
+  // ---- éditeurs (admin)
+  const siteChanged = () => { markDirty(); refreshPage(); };
+  const RICH_HELP = 'Ligne vide = nouveau paragraphe. Mets un passage en gras en l’entourant de deux astérisques : **comme ceci**.';
+  function edText(label, obj, key, opts) {
+    opts = opts || {};
+    const inp = opts.rows ? el('textarea', { rows: opts.rows }) : el('input', { type: 'text' });
+    inp.value = obj[key] || '';
+    inp.addEventListener('input', e => { obj[key] = e.target.value; siteChanged(); });
+    return field(label, inp, opts.help);
+  }
+  function edList(arr, renderItem, make, addLabel) {
+    const box = el('div', { class: 'stafflist' });
+    const draw = () => {
+      box.innerHTML = '';
+      arr.forEach((it, i) => box.append(el('div', { class: 'ed-item' }, renderItem(it).concat([el('div', { class: 'ed-acts' }, [
+        iconBtn('up', 'Monter', () => { if (i > 0) { arr.splice(i, 1); arr.splice(i - 1, 0, it); siteChanged(); draw(); } }),
+        iconBtn('down', 'Descendre', () => { if (i < arr.length - 1) { arr.splice(i, 1); arr.splice(i + 1, 0, it); siteChanged(); draw(); } }),
+        iconBtn('trash', 'Retirer', async () => {
+          if (!(await confirmBox('Retirer cet élément ?', 'Il disparaîtra du site au prochain enregistrement.', 'Retirer'))) return;
+          arr.splice(arr.indexOf(it), 1); siteChanged(); draw();
+        })
+      ])]))));
+      box.append(el('button', { type: 'button', class: 'btn', html: ICON.plus + '<span>' + addLabel + '</span>', onclick: () => { arr.push(make()); siteChanged(); draw(); } }));
+    };
+    draw();
+    return box;
+  }
+  // photo réduite dans le navigateur avant envoi
+  function pickImage(maxSide) {
+    return new Promise(resolve => {
+      const inp = el('input', { type: 'file', accept: 'image/*' });
+      inp.addEventListener('change', async () => {
+        const f = inp.files && inp.files[0]; if (!f) { resolve(null); return; }
+        try {
+          const bmp = await createImageBitmap(f);
+          const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+          const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+          const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 0, 0, c.width, c.height);
+          resolve(await toBlob(c, 0.86));
+        } catch (e) { toast('Cette image n’a pas pu être lue.'); resolve(null); }
+      });
+      inp.click();
+    });
+  }
+  function edPhoto(label, get, set, prefix, removable) {
+    const wrap = el('div', { class: 'field' });
+    const draw = () => {
+      const p = get();
+      fill(wrap, [el('span', { text: label }), el('div', { class: 'ed-photo' }, [
+        el('img', { src: p ? mediaURL(p) : 'logo.png', alt: '' }),
+        el('div', { class: 'btns' }, [
+          el('button', {
+            type: 'button', class: 'btn', text: p ? 'Changer la photo' : 'Ajouter une photo', onclick: async () => {
+              const blob = await pickImage(1400); if (!blob) return;
+              const path = 'media/site/' + prefix + '-' + rid(6) + '.jpg';
+              const old = get();
+              addMedia(path, blob); set(path);
+              if (old) dropMedia(old);
+              siteChanged(); draw();
+            }
+          }),
+          p && removable ? el('button', { type: 'button', class: 'btn danger', text: 'Retirer', onclick: () => { const old = get(); set(null); dropMedia(old); siteChanged(); draw(); } }) : null
+        ])
+      ])]);
+    };
+    draw();
+    return wrap;
+  }
+  const EDITORS = {
+    accueil() {
+      const s = site().home;
+      s.photos = (s.photos || []).filter(Boolean);
+      const slot = i => edPhoto('Photo ' + (i + 1), () => s.photos[i] || null, v => { if (v) s.photos[i] = v; else s.photos.splice(i, 1); s.photos = s.photos.filter(Boolean); }, 'accueil', true);
+      openSheet('Page d’accueil', [
+        el('p', { class: 'help', text: RICH_HELP }),
+        edText('Phrase d’accroche', s, 'lead', { rows: 3 }), edText('Texte de présentation', s, 'text', { rows: 6 }), edText('Slogan', s, 'tagline'),
+        slot(0), slot(1)
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    informations() {
+      const s = site().info;
+      openSheet('Informations', [
+        el('p', { class: 'help', text: RICH_HELP }),
+        edText('Introduction', s, 'intro', { rows: 4 }), edText('Avertissement', s, 'warning', { rows: 3 }), edText('Précision sous l’avertissement', s, 'note', { rows: 2 }),
+        el('h4', { class: 'subhead', text: 'Rubriques' }),
+        edList(s.sections, x => [edText('Titre', x, 'title'), edText('Texte', x, 'text', { rows: 6 })], () => ({ id: 's' + rid(6), title: 'Nouvelle rubrique', text: '' }), 'Ajouter une rubrique')
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    equipe() {
+      const s = site().team;
+      openSheet('Qui sommes-nous ?', [
+        el('p', { class: 'help', text: RICH_HELP }),
+        edText('Introduction', s, 'intro', { rows: 4 }),
+        el('h4', { class: 'subhead', text: 'Membres de l’équipe' }),
+        edList(s.members, x => [
+          edPhoto('Photo', () => x.photo, v => { x.photo = v; }, 'equipe', true),
+          edText('Nom', x, 'name'), edText('Fonction', x, 'role', { help: 'Ex. Employé du D8 depuis le 01/09/2026' }), edText('Présentation', x, 'bio', { rows: 4 })
+        ], () => ({ id: 'm' + rid(6), name: 'NOM Prénom', role: '', bio: '', photo: null }), 'Ajouter un membre')
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    recrutements() {
+      const s = site().recruit;
+      const sw = el('div', { class: 'switch' });
+      const draw = () => fill(sw, [
+        el('button', { type: 'button', class: 'on', 'aria-pressed': String(s.open), text: 'Ouverts', onclick: () => { s.open = true; siteChanged(); draw(); } }),
+        el('button', { type: 'button', class: 'off', 'aria-pressed': String(!s.open), text: 'Fermés', onclick: () => { s.open = false; siteChanged(); draw(); } })
+      ]);
+      draw();
+      openSheet('Recrutements', [
+        el('div', { class: 'field' }, [el('span', { text: 'Statut des recrutements' }), sw]),
+        edText('Message quand c’est ouvert', s, 'openText'), edText('Message quand c’est fermé', s, 'closedText'),
+        el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 5 })
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    calendrier() {
+      const s = site().calendar;
+      openSheet('Calendrier', [
+        el('p', { class: 'note', text: 'Pour réserver ou libérer un jour, ferme ce panneau et clique sur le jour dans le calendrier.' }),
+        el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 3 })
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    faq() {
+      const s = site().faq;
+      openSheet('Réponses FAQ', [
+        el('p', { class: 'help', text: RICH_HELP }),
+        edText('Introduction', s, 'intro', { rows: 3 }),
+        el('h4', { class: 'subhead', text: 'Questions et réponses' }),
+        edList(s.items, x => [edText('Question', x, 'q'), edText('Réponse', x, 'a', { rows: 6 })], () => ({ id: 'q' + rid(6), q: 'Nouvelle question', a: '' }), 'Ajouter une question')
+      ], [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    }
+  };
 
   // ------------------------------------------------------------------ navigation
   function route() {
-    const id = decodeURIComponent(location.hash.slice(1));
-    const l = id && state.data && listing(id);
+    const h = decodeURIComponent(location.hash.slice(1));
+    if (!h || h.startsWith('/')) {
+      const parts = h.replace(/^\/+/, '').split('/').filter(Boolean);
+      const page = PAGE_TITLES[parts[0]] ? parts[0] : 'accueil';
+      if (page === 'catalogue') state.filter.type = typeFromSlug(parts[1] || '') || 'all';
+      lastPageHash = '#/' + (page === 'accueil' ? '' : parts.join('/'));
+      closeVisit();
+      showPage(page);
+      return;
+    }
+    const l = state.data && listing(h);
     if (l && l.points.length) openVisit(l, null);
     else closeVisit();
   }
+  // fermer la visite : retour à la page d'où l'on venait
+  function leaveVisit() { location.hash = lastPageHash || '#/'; }
   window.addEventListener('hashchange', route);
 
   // ------------------------------------------------------------------ démarrage

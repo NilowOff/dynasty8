@@ -134,6 +134,7 @@ async function save(request, env, me) {
   if (deletes.length && me.role !== 'admin') deny('Un gérant ne peut rien supprimer.');
   const used = new Set();
   next.listings.forEach(l => { used.add(l.cover); l.points.forEach(p => { used.add(p.image); used.add(p.imageSmall); }); });
+  if (next.site) { next.site.home.photos.forEach(x => used.add(x)); next.site.team.members.forEach(m => used.add(m.photo)); }
   const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !used.has(p));
 
   next.version = 1;
@@ -223,6 +224,32 @@ function sanitize(d, lenient) {
     });
     if (l.start !== null && !pids.has(l.start)) l.start = l.points[0] ? l.points[0].id : null;
   });
+  if (d.site !== undefined) d.site = sanitizeSite(d.site);
+  if (d.site === undefined) delete d.site;
+}
+
+// pages du site (accueil, informations, équipe, recrutements, calendrier, réponses FAQ)
+function sanitizeSite(s) {
+  if (!isObj(s)) return undefined;
+  const ob = v => isObj(v) ? v : {};
+  const list = (v, max, fn) => (Array.isArray(v) ? v : []).filter(x => isObj(x) && typeof x.id === 'string' && x.id.length <= 20).slice(0, max).map(fn);
+  const h = ob(s.home), i = ob(s.info), t = ob(s.team), r = ob(s.recruit), c = ob(s.calendar), f = ob(s.faq);
+  const booked = {};
+  Object.keys(ob(c.booked)).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).slice(0, 800).forEach(k => { booked[k] = str(c.booked[k], 80); });
+  return {
+    home: { lead: str(h.lead, 600), text: str(h.text, 3000), tagline: str(h.tagline, 200), photos: (Array.isArray(h.photos) ? h.photos : []).map(imgPath).filter(Boolean).slice(0, 4) },
+    info: {
+      intro: str(i.intro, 2000), warning: str(i.warning, 600), note: str(i.note, 400),
+      sections: list(i.sections, 30, x => ({ id: x.id, title: str(x.title, 120), text: str(x.text, 5000) }))
+    },
+    team: {
+      intro: str(t.intro, 2000),
+      members: list(t.members, 60, x => ({ id: x.id, name: str(x.name, 80), role: str(x.role, 160), bio: str(x.bio, 3000), photo: imgPath(x.photo) }))
+    },
+    recruit: { open: r.open === true, intro: str(r.intro, 2000), closedText: str(r.closedText, 300), openText: str(r.openText, 300) },
+    calendar: { intro: str(c.intro, 1000), booked },
+    faq: { intro: str(f.intro, 2000), items: list(f.items, 80, x => ({ id: x.id, q: str(x.q, 300), a: str(x.a, 5000) })) }
+  };
 }
 
 // l'auteur d'un bien ou d'une pièce est fixé par le serveur, à la création
@@ -243,6 +270,7 @@ function stampAuthors(cur, next, me) {
 
 // règles du gérant : il crée des biens et des pièces, modifie ce qu'il a créé, choisit la pièce de départ, ne supprime rien
 function checkGerant(cur, next, me) {
+  if (!eq(cur.site === undefined ? null : cur.site, next.site === undefined ? null : next.site)) deny('Seul un admin peut modifier les pages du site.');
   const nextL = new Map(next.listings.map(l => [l.id, l]));
   for (const cl of cur.listings) {
     const nl = nextL.get(cl.id);
