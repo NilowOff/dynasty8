@@ -1,18 +1,13 @@
-/* Catalogue Dynasty 8 : catalogue public, visite 360°, mode agent (création des biens, pièces,
-   étiquettes, passages) et enregistrement dans les fichiers de la page. */
+/* Catalogue Dynasty 8 : catalogue public, visite 360°, espace employé (admin, gérant : création des biens,
+   pièces, étiquettes, passages) et enregistrement sur le serveur de l'agence. */
 (function () {
   'use strict';
   const D2R = Math.PI / 180;
   const $ = id => document.getElementById(id);
-  // hébergement : sur GitHub Pages (utilisateur.github.io/depot/), l'enregistrement passe par l'API GitHub
-  const GH = (function () {
-    const h = location.hostname;
-    if (!/\.github\.io$/i.test(h)) return null;
-    const owner = h.split('.')[0];
-    const seg = location.pathname.split('/').filter(Boolean)[0];
-    return { owner, repo: seg && !/\.html?$/i.test(seg) ? seg : owner + '.github.io', branch: 'main' };
-  })();
-  const SHARE_BASE = GH ? location.origin + location.pathname.replace(/index\.html?$/i, '') : 'https://claude.ai/artifact/7eJ2mP66hxVcGT49Gkc4ww';
+  // serveur de l'agence (comptes employés, catalogue, images des pièces) : adresse dans <meta name="d8-api">
+  const API = ((document.querySelector('meta[name="d8-api"]') || {}).content || '').trim().replace(/\/+$/, '');
+  const SHARE_BASE = API ? location.origin + location.pathname.replace(/index\.html?$/i, '') : 'https://claude.ai/artifact/7eJ2mP66hxVcGT49Gkc4ww';
+  const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant' };
   const TYPES = ['Appartement', 'Maison', 'Villa', 'Bureau', 'Entrepôt', 'Garage', 'Commerce', 'Terrain'];
   const STATUSES = { disponible: 'Disponible', reserve: 'Réservé', vendu: 'Vendu', loue: 'Loué' };
   const DEALS = { vente: 'Vente', location: 'Location' };
@@ -49,6 +44,8 @@
     urls: new Map(),      // chemin -> URL locale (images pas encore publiées)
     removed: new Set(),   // fichiers media/ à supprimer au prochain enregistrement
     agent: false, canEdit: false, artifact: null, readOnly: false,
+    session: null, user: null,       // employé connecté : { username, role }
+    uploaded: new Set(),             // images déjà envoyées au serveur (en cas de nouvel essai)
     filter: { type: 'all', deal: 'all', sort: 'recent', q: '' },
     saving: false
   };
@@ -77,6 +74,7 @@
     starFill: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l2.8 5.8 6.2.9-4.5 4.4 1.1 6.2L12 17.4 6.4 20.3l1.1-6.2L3 9.7l6.2-.9Z"/></svg>',
     image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+    key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></svg>',
     arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>'
   };
   function iconBtn(icon, label, onclick) { return el('button', { type: 'button', 'aria-label': label, title: label, html: ICON[icon], onclick }); }
@@ -98,7 +96,31 @@
     const p = priceParts(l);
     return el('p', { class: 'price' + (p.ask ? ' ask' : '') + (cls ? ' ' + cls : '') }, [p.text, p.per ? el('small', { text: p.per }) : null]);
   }
-  function mediaURL(path) { return path ? (state.urls.get(path) || path) : ''; }
+  function mediaURL(path) {
+    if (!path) return '';
+    if (state.urls.has(path)) return state.urls.get(path);
+    return API && path.startsWith('media/') ? API + '/' + path : path;
+  }
+  // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé
+  const me = () => state.user ? state.user.username : null;
+  const isAdmin = () => !state.user || state.user.role === 'admin';
+  const canEditListing = l => isAdmin() || (!!l && l.createdBy === me());
+  const canEditPoint = (l, p) => canEditListing(l) || (!!p && p.createdBy === me());
+  let savedKeysCache = { src: null, keys: null };
+  function savedHas(...ids) {
+    if (savedKeysCache.src !== state.saved) {
+      const keys = new Set();
+      try {
+        JSON.parse(state.saved).listings.forEach(l => {
+          keys.add(l.id);
+          (l.points || []).forEach(p => { keys.add(l.id + '/' + p.id); (p.links || []).forEach(k => keys.add(l.id + '/' + p.id + '/' + k.id)); });
+        });
+      } catch (e) { }
+      savedKeysCache = { src: state.saved, keys };
+    }
+    return savedKeysCache.keys.has(ids.join('/'));
+  }
+  const canEditLink = (l, p, link) => canEditPoint(l, p) || !savedHas(l.id, p.id, link.id);
   function wrapYaw(y) { return ((y % 360) + 540) % 360 - 180; }
   function listing(id) { return state.data.listings.find(l => l.id === id); }
   function pointOf(l, id) { return l.points.find(p => p.id === id); }
@@ -125,6 +147,12 @@
 
   // ------------------------------------------------------------------ données
   async function loadData() {
+    if (API) {
+      try {
+        const r = await fetch(API + '/api/data', { cache: 'no-store' });
+        if (r.ok) { const d = await r.json(); if (d && Array.isArray(d.listings)) return d; }
+      } catch (e) { /* serveur injoignable : version publiée avec le site */ }
+    }
     try {
       const r = await fetch('data.json', { cache: 'no-store' });
       if (r.ok) { const d = await r.json(); if (d && Array.isArray(d.listings)) return d; }
@@ -204,32 +232,29 @@
 
   // ------------------------------------------------------------------ enregistrement
   async function save() {
-    if ((!state.artifact && !state.ghToken) || state.saving || !isDirty()) return;
-    state.saving = true; updateAgentBar();
-    const before = state.data.updated;
-    state.data.updated = new Date().toISOString();
-    const files = { 'data.json': { content: JSON.stringify(state.data, null, 1), contentType: 'application/json' } };
-    for (const [p, b] of state.pending) files[p] = b;
-    for (const p of state.removed) files[p] = null;
+    if ((!state.artifact && !state.session) || state.saving || !isDirty()) return;
+    state.saving = true; updateAgentBar(); $('agentState').textContent = 'Enregistrement…';
     try {
-      if (state.ghToken) await saveGithub(files);
-      else await state.artifact.publish(files);
-      state.saved = JSON.stringify(state.data);
-      state.baseUpdated = state.data.updated;
-      state.pending.clear(); state.removed.clear();
+      if (state.session) await saveApi();
+      else await saveArtifact();
+      state.pending.clear(); state.removed.clear(); state.uploaded.clear();
       try { await idbOp('readwrite', st => st.delete('draft')); } catch (e) { }
-      toast(state.ghToken ? 'Enregistré. Le site public se met à jour d’ici une minute.' : 'Enregistré. Les visiteurs voient maintenant cette version.', 4500);
+      toast('Enregistré. Les visiteurs voient maintenant cette version.', 4500);
     } catch (e) {
-      state.data.updated = before;
       const code = e && e.code;
-      if (e && e.gh) {
+      if (e && e.api) {
         if (e.status === 401) {
-          await modal('Clé d’accès refusée', 'Ta clé GitHub n’est plus valable (expirée ou supprimée). Crée-en une nouvelle et reconnecte-toi. Tes modifications restent ici.');
-          ghLogout(true); openGithubLogin();
-        } else if (e.status === 403 || e.status === 404) {
-          await modal('Accès insuffisant', 'Ta clé ne permet pas d’écrire dans le dépôt ' + GH.owner + '/' + GH.repo + '. Vérifie qu’elle donne accès à ce dépôt avec la permission « Contents : Read and write ».');
+          await modal('Session expirée', 'Reconnecte-toi pour enregistrer. Tes modifications restent ici.');
+          dropSession(); openLogin();
+        } else if (e.status === 403) {
+          const undo = await modal('Action non autorisée', e.message, [{ label: 'Garder mes modifications', value: false }, { label: 'Annuler mes modifications', value: true, cls: 'danger' }]);
+          if (undo) await discardChanges();
+        } else if (e.status === 413) {
+          await modal('Trop lourd', e.message);
+        } else if (e.status === 0) {
+          await modal('Pas de connexion', e.message + ' Tes modifications restent ici.');
         } else {
-          await modal('L’enregistrement a échoué', 'GitHub a répondu une erreur (' + e.status + '). Réessaie dans un instant ; tes modifications restent ici.');
+          await modal('L’enregistrement a échoué', e.message + ' Réessaie dans un instant ; tes modifications restent ici.');
         }
       } else if (code === 'capability_disabled') {
         await modal('Enregistrement impossible pour l’instant',
@@ -249,98 +274,264 @@
     }
     state.saving = false; updateAgentBar();
   }
+  async function saveArtifact() {
+    const before = state.data.updated;
+    state.data.updated = new Date().toISOString();
+    const files = { 'data.json': { content: JSON.stringify(state.data, null, 1), contentType: 'application/json' } };
+    for (const [p, b] of state.pending) files[p] = b;
+    for (const p of state.removed) files[p] = null;
+    try { await state.artifact.publish(files); }
+    catch (e) { state.data.updated = before; throw e; }
+    state.saved = JSON.stringify(state.data);
+    state.baseUpdated = state.data.updated;
+  }
 
-  // ------------------------------------------------------------------ GitHub (hébergement GitHub Pages)
-  async function gh(path, opts) {
-    opts = opts || {};
-    const headers = { 'Accept': opts.accept || 'application/vnd.github+json', 'Authorization': 'Bearer ' + state.ghToken, 'X-GitHub-Api-Version': '2022-11-28' };
-    if (opts.body) headers['Content-Type'] = 'application/json';
-    const r = await fetch('https://api.github.com' + path, { method: opts.method || 'GET', headers, body: opts.body, cache: 'no-store' });
-    if (!r.ok) { const e = new Error('GitHub ' + r.status); e.gh = true; e.status = r.status; throw e; }
-    if (opts.raw) return r.text();
-    return r.status === 204 ? null : r.json();
+  // ------------------------------------------------------------------ serveur de l'agence
+  async function api(method, path, body, contentType) {
+    const headers = {};
+    if (state.session) headers.Authorization = 'Bearer ' + state.session;
+    let payload;
+    if (body instanceof Blob) { payload = body; headers['Content-Type'] = contentType || body.type || 'application/octet-stream'; }
+    else if (body !== undefined) { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
+    let r;
+    try { r = await fetch(API + path, { method, headers, body: payload, cache: 'no-store' }); }
+    catch (e) { throw Object.assign(new Error('Le serveur ne répond pas. Vérifie ta connexion.'), { api: true, status: 0 }); }
+    let j = null; try { j = await r.json(); } catch (e) { }
+    if (!r.ok) throw Object.assign(new Error((j && j.message) || ('Erreur ' + r.status + '.')), { api: true, status: r.status, code: j && j.error });
+    return j;
   }
-  function blobToBase64(blob) {
-    return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
-  }
-  // un seul « commit » avec toutes les modifications (données, images ajoutées, images supprimées)
-  async function saveGithub(files) {
-    const base = '/repos/' + GH.owner + '/' + GH.repo;
-    const ref = await gh(base + '/git/ref/heads/' + GH.branch);
-    const head = ref.object.sha;
-    const commit = await gh(base + '/git/commits/' + head);
-    const existing = new Set((await gh(base + '/git/trees/' + commit.tree.sha + '?recursive=1')).tree.map(t => t.path));
-    const tree = [];
-    const entries = Object.entries(files);
-    let done = 0;
-    for (const [path, v] of entries) {
-      if (v === null) { if (existing.has(path)) tree.push({ path, mode: '100644', type: 'blob', sha: null }); continue; }
-      const body = v instanceof Blob ? { content: await blobToBase64(v), encoding: 'base64' } : { content: v.content, encoding: 'utf-8' };
-      const b = await gh(base + '/git/blobs', { method: 'POST', body: JSON.stringify(body) });
-      tree.push({ path, mode: '100644', type: 'blob', sha: b.sha });
-      done++; $('agentState').textContent = 'Envoi… ' + done + '/' + entries.length;
+  async function saveApi() {
+    const todo = [...state.pending.entries()].filter(([p]) => !state.uploaded.has(p));
+    let i = 0;
+    for (const [path, blob] of todo) {
+      $('agentState').textContent = 'Envoi des images… ' + (++i) + '/' + todo.length;
+      await api('PUT', '/api/' + path, blob, 'image/jpeg');
+      state.uploaded.add(path);
     }
-    const nt = await gh(base + '/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: commit.tree.sha, tree }) });
-    const nc = await gh(base + '/git/commits', { method: 'POST', body: JSON.stringify({ message: 'Mise à jour du catalogue', tree: nt.sha, parents: [head] }) });
-    await gh(base + '/git/refs/heads/' + GH.branch, { method: 'PATCH', body: JSON.stringify({ sha: nc.sha }) });
+    $('agentState').textContent = 'Enregistrement…';
+    const r = await api('POST', '/api/save', { base: JSON.parse(state.saved), data: state.data, deletes: isAdmin() ? [...state.removed] : [] });
+    adoptServerData(r.data);
   }
-  async function ghLogin(token) {
-    state.ghToken = token.trim();
-    try {
-      const repo = await gh('/repos/' + GH.owner + '/' + GH.repo);
-      if (!repo.permissions || !repo.permissions.push) throw Object.assign(new Error('push'), { gh: true, status: 403 });
-    } catch (e) { state.ghToken = null; throw e; }
-    try { localStorage.setItem('d8-gh-token', state.ghToken); } catch (e) { }
-    state.canEdit = true;
-    // données les plus récentes, directement depuis le dépôt (le site public peut avoir une minute de retard)
-    try {
-      const txt = await gh('/repos/' + GH.owner + '/' + GH.repo + '/contents/data.json?ref=' + GH.branch, { accept: 'application/vnd.github.raw+json', raw: true });
-      const d = JSON.parse(txt);
-      if (d && Array.isArray(d.listings) && !isDirty() && JSON.stringify(d) !== state.saved) {
-        normalize(d); state.data = d; state.saved = JSON.stringify(d); state.baseUpdated = d.updated || '';
-        renderCatalog(); route();
+  // le serveur renvoie le catalogue fusionné (avec les changements des autres employés)
+  function adoptServerData(d) {
+    normalize(d);
+    const same = JSON.stringify(d.listings) === JSON.stringify(state.data.listings);
+    if (same) {
+      Object.keys(state.data).forEach(k => { if (k !== 'listings') delete state.data[k]; });
+      Object.keys(d).forEach(k => { if (k !== 'listings') state.data[k] = d[k]; });
+    } else {
+      const lid = visit.listing && visit.listing.id, pid = visit.point && visit.point.id;
+      state.data = d;
+      if (!$('sheet').hidden) closeSheet();
+      if (lid) {
+        const l = listing(lid);
+        if (l && l.points.length) { visit.listing = l; visit.point = pointOf(l, pid) || null; if (visit.point) applyPoint(visit.point); setVisitTexts(); refreshVisitAgent(); }
+        else location.hash = '';
       }
-    } catch (e) { /* on garde la version du site */ }
+      toast('Enregistré. Le catalogue inclut aussi les derniers changements des autres employés.', 5000);
+    }
+    state.saved = JSON.stringify(state.data);
+    state.baseUpdated = state.data.updated || '';
+    renderCatalog();
   }
-  function ghLogout(keepAgent) {
-    state.ghToken = null;
-    try { localStorage.removeItem('d8-gh-token'); } catch (e) { }
-    if (!keepAgent) { state.canEdit = false; setAgent(false); }
+  async function discardChanges() {
+    for (const u of state.urls.values()) URL.revokeObjectURL(u);
+    state.urls.clear(); state.pending.clear(); state.removed.clear(); state.uploaded.clear();
+    let d = null;
+    try { d = await api('GET', '/api/data'); } catch (e) { d = JSON.parse(state.saved); }
+    normalize(d);
+    state.data = d; state.saved = JSON.stringify(d); state.baseUpdated = d.updated || '';
+    try { await idbOp('readwrite', st => st.delete('draft')); } catch (e) { }
+    closeSheet(); renderCatalog();
+    if (visit.listing) { const l = listing(visit.listing.id); visit.listing = null; visit.point = null; if (l && l.points.length) openVisit(l); else location.hash = ''; }
+    updateAgentBar();
+    toast('Modifications annulées.');
   }
-  function openGithubLogin() {
-    const tok = el('input', { id: 'ghToken', type: 'password', autocomplete: 'off', placeholder: 'github_pat_…' });
+
+  function useSession(s) {
+    state.session = s.token; state.user = s.user; state.canEdit = true;
+    try { localStorage.setItem('d8-session', JSON.stringify(s)); } catch (e) { }
+    updateStaffUI();
+  }
+  function dropSession() {
+    state.session = null; state.user = null; state.canEdit = false;
+    try { localStorage.removeItem('d8-session'); } catch (e) { }
+    setAgent(false);
+  }
+  async function logout() {
+    if (isDirty() && !(await confirmBox('Se déconnecter ?', 'Tes modifications non enregistrées seront perdues.', 'Se déconnecter'))) return;
+    try { await idbOp('readwrite', st => st.delete('draft')); } catch (e) { }
+    const dirty = isDirty();
+    dropSession(); closeSheet();
+    if (dirty) { await discardLocal(); }
+    toast('Déconnecté.');
+  }
+  async function discardLocal() {
+    state.pending.clear(); state.removed.clear(); state.uploaded.clear();
+    state.data = JSON.parse(state.saved); normalize(state.data);
+    renderCatalog(); route();
+  }
+  function updateStaffUI() {
+    const u = state.user;
+    const tag = $('agentTag');
+    if (tag) tag.textContent = u ? (ROLE_NAMES[u.role] || u.role) + ' · ' + u.username : 'Mode agent';
+    if ($('staffBtn')) $('staffBtn').hidden = !(u && u.role === 'admin');
+    if ($('accountBtn')) $('accountBtn').hidden = !u;
+    const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? ROLE_NAMES[u.role] : 'Mode agent';
+  }
+  function inputEnter(inputs, fn) { inputs.forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fn(); } })); }
+
+  async function openLogin() {
+    let setupMode = false;
+    try { setupMode = !!(await api('GET', '/api/status')).setup; } catch (e) { /* on tente la connexion normale */ }
+    const user = el('input', { id: 'loginUser', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
+    const pass = el('input', { id: 'loginPass', type: 'password', autocomplete: setupMode ? 'new-password' : 'current-password' });
+    const pass2 = setupMode ? el('input', { id: 'loginPass2', type: 'password', autocomplete: 'new-password' }) : null;
     const err = el('p', { class: 'note error', hidden: true });
-    const btn = el('button', {
-      type: 'button', class: 'btn primary', text: 'Se connecter', onclick: async () => {
-        if (!tok.value.trim()) return;
-        btn.disabled = true; err.hidden = true;
-        try { await ghLogin(tok.value); closeSheet(); setAgent(true); offerDraft(); toast('Connecté : mode agent activé.'); }
-        catch (e) { err.textContent = e.status === 401 ? 'Cette clé n’est pas valable.' : 'Cette clé ne donne pas le droit d’écrire dans ' + GH.owner + '/' + GH.repo + '.'; err.hidden = false; }
-        btn.disabled = false;
+    const btn = el('button', { type: 'button', class: 'btn primary', id: 'loginBtn', text: setupMode ? 'Créer le compte admin' : 'Se connecter' });
+    const submit = async () => {
+      if (btn.disabled) return;
+      err.hidden = true;
+      if (!user.value.trim() || !pass.value) { err.textContent = 'Remplis l’identifiant et le mot de passe.'; err.hidden = false; return; }
+      if (setupMode && pass.value !== pass2.value) { err.textContent = 'Les deux mots de passe ne sont pas identiques.'; err.hidden = false; return; }
+      btn.disabled = true;
+      try {
+        const s = await api('POST', setupMode ? '/api/setup' : '/api/login', { username: user.value.trim(), password: pass.value });
+        useSession(s);
+        closeSheet(); setAgent(true); offerDraft();
+        toast('Connecté : ' + s.user.username + ' (' + ROLE_NAMES[s.user.role] + ').');
+      } catch (e) { err.textContent = e.message; err.hidden = false; }
+      btn.disabled = false;
+    };
+    btn.addEventListener('click', submit);
+    inputEnter([user, pass].concat(pass2 ? [pass2] : []), submit);
+    openSheet('Espace employé', [
+      setupMode ? el('p', { class: 'note', text: 'Première connexion : aucun compte n’existe encore. Crée le compte administrateur, qui pourra ensuite créer les comptes des autres employés.' })
+        : el('p', { class: 'help', text: 'Réservé aux employés de l’agence. Ton compte est créé par un admin.' }),
+      field('Identifiant', user, setupMode ? '3 à 24 caractères : lettres, chiffres, point ou tiret.' : null),
+      field('Mot de passe', pass, setupMode ? 'Au moins 8 caractères.' : null),
+      pass2 ? field('Confirme le mot de passe', pass2) : null,
+      err
+    ], [btn]);
+    setTimeout(() => user.focus(), 50);
+  }
+
+  function openAccountSheet() {
+    const u = state.user; if (!u) return;
+    const cur = el('input', { id: 'pwCurrent', type: 'password', autocomplete: 'current-password' });
+    const nw = el('input', { id: 'pwNew', type: 'password', autocomplete: 'new-password' });
+    const nw2 = el('input', { id: 'pwNew2', type: 'password', autocomplete: 'new-password' });
+    const msg = el('p', { class: 'note error', hidden: true });
+    const change = el('button', { type: 'button', class: 'btn primary', text: 'Changer le mot de passe' });
+    const submit = async () => {
+      msg.hidden = true; msg.className = 'note error';
+      if (nw.value !== nw2.value) { msg.textContent = 'Les deux nouveaux mots de passe ne sont pas identiques.'; msg.hidden = false; return; }
+      change.disabled = true;
+      try {
+        const s = await api('POST', '/api/password', { current: cur.value, password: nw.value });
+        useSession(s); cur.value = nw.value = nw2.value = '';
+        msg.className = 'note'; msg.textContent = 'Mot de passe changé.'; msg.hidden = false;
+      } catch (e) { msg.textContent = e.message; msg.hidden = false; }
+      change.disabled = false;
+    };
+    change.addEventListener('click', submit);
+    inputEnter([cur, nw, nw2], submit);
+    openSheet('Mon compte', [
+      el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: ROLE_NAMES[u.role] })])]),
+      el('p', { class: 'help', text: u.role === 'admin' ? 'Admin : tu peux tout faire, y compris gérer les comptes des employés.' : 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés ; tu ne peux rien supprimer.' }),
+      el('h4', { class: 'subhead', text: 'Changer mon mot de passe' }),
+      field('Mot de passe actuel', cur), field('Nouveau mot de passe', nw, 'Au moins 8 caractères.'), field('Confirme le nouveau', nw2), msg
+    ], [change, el('button', { type: 'button', class: 'btn danger', id: 'logoutBtn', text: 'Se déconnecter', onclick: logout })]);
+  }
+
+  async function openStaffSheet() {
+    const box = el('div', { class: 'stafflist' });
+    const err = el('p', { class: 'note error', hidden: true });
+    const showErr = e => { err.textContent = e.message; err.hidden = false; };
+    const render = users => {
+      box.innerHTML = '';
+      users.forEach(u => {
+        const role = el('select', {
+          'aria-label': 'Grade de ' + u.username, onchange: async e => {
+            err.hidden = true;
+            try { render((await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { role: e.target.value })).users); toast('Grade de ' + u.username + ' : ' + ROLE_NAMES[e.target.value] + '.'); }
+            catch (x) { showErr(x); e.target.value = u.role; }
+          }
+        }, Object.entries(ROLE_NAMES).map(([v, t]) => el('option', { value: v, text: t, selected: u.role === v })));
+        const self = u.username === me();
+        box.append(el('div', { class: 'staffitem' }, [
+          el('span', { class: 'avatar', text: u.username.slice(0, 1).toUpperCase() }),
+          el('div', {}, [el('b', { text: u.username + (self ? ' (toi)' : '') }), el('small', { text: 'Créé le ' + (u.created ? new Date(u.created).toLocaleDateString('fr-FR') : '?') })]),
+          role,
+          el('div', { class: 'acts' }, [
+            iconBtn('key', 'Nouveau mot de passe pour ' + u.username, () => openResetSheet(u)),
+            self ? null : iconBtn('trash', 'Supprimer le compte de ' + u.username, async () => {
+              if (!(await confirmBox('Supprimer le compte « ' + u.username + ' » ?', 'Cette personne ne pourra plus se connecter. Les biens et pièces qu’elle a créés restent dans le catalogue.', 'Supprimer'))) return;
+              try { render((await api('DELETE', '/api/staff/' + encodeURIComponent(u.username))).users); toast('Compte supprimé.'); } catch (x) { showErr(x); }
+            })
+          ])
+        ]));
+      });
+    };
+    const nu = el('input', { id: 'staffUser', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'ex. jean.dupont' });
+    const np = el('input', { id: 'staffPass', type: 'text', autocomplete: 'off', spellcheck: 'false' });
+    const nr = el('select', { id: 'staffRole' }, [el('option', { value: 'gerant', text: 'Gérant' }), el('option', { value: 'admin', text: 'Admin' })]);
+    const add = el('button', { type: 'button', class: 'btn primary', id: 'staffAdd', html: ICON.plus + '<span>Créer le compte</span>' });
+    const create = async () => {
+      err.hidden = true; add.disabled = true;
+      try {
+        render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value })).users);
+        toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.', 5000);
+        nu.value = ''; np.value = '';
+      } catch (x) { showErr(x); }
+      add.disabled = false;
+    };
+    add.addEventListener('click', create);
+    inputEnter([nu, np], create);
+    openSheet('Comptes des employés', [
+      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer.' }),
+      box, err,
+      el('h4', { class: 'subhead', text: 'Nouveau compte' }),
+      field('Identifiant', nu), field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
+    ], [add]);
+    box.append(el('p', { class: 'help', text: 'Chargement…' }));
+    try { render((await api('GET', '/api/staff')).users); } catch (x) { box.innerHTML = ''; showErr(x); }
+  }
+  function openResetSheet(u) {
+    const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false' });
+    const err = el('p', { class: 'note error', hidden: true });
+    const ok = el('button', {
+      type: 'button', class: 'btn primary', text: 'Valider', onclick: async () => {
+        err.hidden = true; ok.disabled = true;
+        try { await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { password: np.value }); toast('Nouveau mot de passe enregistré pour ' + u.username + '.'); openStaffSheet(); }
+        catch (x) { err.textContent = x.message; err.hidden = false; }
+        ok.disabled = false;
       }
     });
-    openSheet('Espace agent', [
-      el('p', { class: 'note', text: 'Colle ta clé d’accès GitHub. Elle reste uniquement dans ce navigateur et sert à enregistrer tes modifications dans le dépôt ' + GH.owner + '/' + GH.repo + '.' }),
-      field('Clé d’accès GitHub', tok),
-      err,
-      el('p', { class: 'help' }, ['Pas encore de clé ? ', el('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener', text: 'Créer une clé sur GitHub' }), ' : accès au seul dépôt « ' + GH.repo + ' », permission « Contents : Read and write ».'])
-    ], [btn]);
-    setTimeout(() => tok.focus(), 50);
+    openSheet('Mot de passe de ' + u.username, [
+      el('p', { class: 'help', text: 'Choisis un nouveau mot de passe et donne-le à l’employé. Il sera déconnecté de ses appareils.' }),
+      field('Nouveau mot de passe', np, 'Au moins 8 caractères.'), err
+    ], [ok, el('button', { type: 'button', class: 'btn', text: 'Retour', onclick: openStaffSheet })]);
+    setTimeout(() => np.focus(), 50);
   }
 
-  // ------------------------------------------------------------------ mode agent
+  // ------------------------------------------------------------------ mode employé
   async function initCaps() {
-    if (GH) {
-      const link = $('agentLink'); if (link) link.hidden = false;
-      let tok = null; try { tok = localStorage.getItem('d8-gh-token'); } catch (e) { }
-      if (tok) {
+    if (API) {
+      $('agentBtn').hidden = false;
+      let s = null; try { s = JSON.parse(localStorage.getItem('d8-session') || 'null'); } catch (e) { }
+      if (s && s.token) {
+        state.session = s.token;
         try {
-          await ghLogin(tok);
-          $('agentBtn').hidden = false;
-          let saved = false; try { saved = sessionStorage.getItem('d8-agent') === '1'; } catch (e) { }
-          if (saved) setAgent(true);
+          const r = await api('GET', '/api/me');
+          useSession({ token: s.token, user: r.user });
+          let on = false; try { on = sessionStorage.getItem('d8-agent') === '1'; } catch (e) { }
+          if (on) setAgent(true);
           offerDraft();
-        } catch (e) { if (e.status === 401) ghLogout(true); }
+        } catch (e) {
+          if (e.status === 401) dropSession();
+          else { state.session = null; }
+        }
       }
       return;
     }
@@ -362,25 +553,22 @@
     state.agent = !!on && state.canEdit;
     try { sessionStorage.setItem('d8-agent', state.agent ? '1' : '0'); } catch (e) { }
     $('agentbar').hidden = !state.agent;
-    $('agentBtn').hidden = !state.canEdit || state.agent;
-    if ($('agentLogout')) $('agentLogout').hidden = !(state.agent && state.ghToken);
+    $('agentBtn').hidden = API ? state.agent : (!state.canEdit || state.agent);
+    updateStaffUI();
     renderCatalog();
     if (!$('visit').hidden) refreshVisitAgent();
     updateAgentBar();
   }
   function updateAgentBar() {
     const dirty = isDirty();
-    $('agentState').textContent = state.saving ? 'Enregistrement…' : dirty ? 'Modifications non enregistrées' : 'Tout est enregistré';
+    if (!state.saving) $('agentState').textContent = dirty ? 'Modifications non enregistrées' : 'Tout est enregistré';
     $('saveBtn').disabled = !dirty || state.saving;
     const vs = $('vSave'); if (vs) { vs.disabled = !dirty || state.saving; vs.textContent = state.saving ? 'Enregistrement…' : 'Enregistrer'; }
   }
-  $('agentBtn').addEventListener('click', () => setAgent(true));
+  $('agentBtn').addEventListener('click', () => { if (state.canEdit) setAgent(true); else if (API) openLogin(); });
   $('agentExit').addEventListener('click', () => setAgent(false));
-  if ($('agentLink')) $('agentLink').addEventListener('click', () => { if (state.canEdit) setAgent(true); else openGithubLogin(); });
-  if ($('agentLogout')) $('agentLogout').addEventListener('click', async () => {
-    if (isDirty() && !(await confirmBox('Se déconnecter ?', 'Tes modifications non enregistrées restent dans ce navigateur, mais tu devras recoller ta clé pour les enregistrer.', 'Se déconnecter'))) return;
-    ghLogout(false); toast('Déconnecté.');
-  });
+  if ($('staffBtn')) $('staffBtn').addEventListener('click', openStaffSheet);
+  if ($('accountBtn')) $('accountBtn').addEventListener('click', openAccountSheet);
   $('saveBtn').addEventListener('click', save);
   window.addEventListener('beforeunload', e => { if (state.canEdit && isDirty()) { e.preventDefault(); e.returnValue = ''; } });
 
@@ -445,7 +633,7 @@
     const card = el('article', { class: 'card' }, [link]);
     if (state.agent) {
       card.append(el('div', { class: 'agent-actions' }, [
-        el('button', { type: 'button', class: 'btn', html: ICON.pencil + '<span>Modifier</span>', onclick: () => openListingSheet(l) }),
+        el('button', { type: 'button', class: 'btn', html: (canEditListing(l) ? ICON.pencil + '<span>Modifier</span>' : ICON.eye + '<span>Infos</span>'), onclick: () => openListingSheet(l) }),
         l.points.length ? el('button', { type: 'button', class: 'btn', html: ICON.plus + '<span>Pièce</span>', onclick: () => openWizard(l) }) : null
       ]));
     }
@@ -459,6 +647,7 @@
       status: 'disponible', district: '', surface: null, rooms: null, garage: null, description: '', features: [],
       cover: null, start: null, order: Math.max(0, ...d.listings.map(x => x.order || 0)) + 1, created: new Date().toISOString().slice(0, 10), points: []
     };
+    if (me()) l.createdBy = me();
     d.listings.push(l);
     markDirty(); renderCatalog();
     openListingSheet(l, true);
@@ -514,8 +703,11 @@
       ])));
     };
     renderRooms();
-    openSheet(isNew ? 'Nouveau bien' : 'Modifier le bien', [
+    const ro = !canEditListing(l);
+    if (ro) [name, type, period, deal, price, status, district, surface, rooms, garage, desc, feats].forEach(i => { i.disabled = true; });
+    openSheet(isNew ? 'Nouveau bien' : ro ? l.name : 'Modifier le bien', [
       isNew ? el('p', { class: 'note', text: 'Remplis les infos, puis ajoute les pièces avec tes screens. Pense à enregistrer à la fin.' }) : null,
+      ro ? el('p', { class: 'note', text: 'Ce bien a été créé par ' + (l.createdBy || 'un admin') + ' : tu peux y ajouter des pièces et choisir la pièce de départ, mais pas modifier ses infos ni son prix.' }) : null,
       field('Nom du bien', name),
       el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
       el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
@@ -525,11 +717,12 @@
       field('Places de garage', garage),
       field('Description', desc),
       field('Points forts', feats, 'Sépare-les par des virgules.'),
+      l.points.length > 1 ? startPicker(l, renderRooms) : null,
       el('div', { class: 'field' }, [el('span', { text: 'Pièces de la visite' }), roomsBox])
     ], [
       el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }),
       l.points.length ? el('button', { type: 'button', class: 'btn', text: 'Ouvrir la visite', onclick: () => { closeSheet(); go(l); } }) : null,
-      el('button', { type: 'button', class: 'btn danger', text: 'Supprimer le bien', onclick: () => deleteListing(l) })
+      isAdmin() ? el('button', { type: 'button', class: 'btn danger', text: 'Supprimer le bien', onclick: () => deleteListing(l) }) : null
     ]);
     if (isNew) setTimeout(() => { name.focus(); name.select(); }, 50);
   }
@@ -648,6 +841,14 @@
     visit.point = p;
     setVisitTexts();
     buildPins(); buildLinks(); orientBadge();
+    refreshTools();
+  }
+  // outils visibles selon les droits sur la pièce affichée
+  function refreshTools() {
+    const l = visit.listing, p = visit.point; if (!l || !p) return;
+    const ep = canEditPoint(l, p), elist = canEditListing(l) || !l.cover;
+    const show = { start: ep, pin: ep, link: true, north: ep, cover: elist, rooms: true };
+    document.querySelectorAll('#vtools button[data-tool]').forEach(b => { b.hidden = !show[b.dataset.tool]; });
   }
 
   // étiquettes
@@ -657,7 +858,7 @@
     p.pins.forEach(pin => {
       const b = el('button', { type: 'button', class: 'pin' }, [el('span', { class: 'dot' }), el('span', { class: 'tag' }, [pin.label || 'Étiquette', pin.text ? el('span', { class: 'more', text: pin.text }) : null])]);
       b.setAttribute('aria-label', (pin.label || '') + (pin.text ? ' : ' + pin.text : ''));
-      b.addEventListener('click', () => { if (state.agent) openPinSheet(pin); else b.classList.toggle('open'); });
+      b.addEventListener('click', () => { if (state.agent && canEditPoint(visit.listing, visit.point)) openPinSheet(pin); else b.classList.toggle('open'); });
       $('overlay').append(b);
       visit.pins.push({ el: b, pin });
     });
@@ -810,13 +1011,14 @@
     let bar = $('vAgent');
     if (on && !bar) {
       bar = el('div', { id: 'vAgent', style: { position: 'absolute', zIndex: 7, top: 'calc(env(safe-area-inset-top, 0px) + 16px)', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', alignItems: 'center', background: 'var(--sun)', color: 'var(--ink)', borderRadius: '999px', padding: '4px 4px 4px 12px', boxShadow: '0 6px 18px rgba(0,0,0,.3)' } }, [
-        el('span', { class: 'tag', text: 'Mode agent', style: { fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: '12px' } }),
+        el('span', { class: 'tag', text: state.user ? ROLE_NAMES[state.user.role] : 'Mode agent', style: { fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: '12px' } }),
         el('button', { id: 'vSave', type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: save, style: { minHeight: '32px' } })
       ]);
       $('visit').append(bar);
     }
     if (bar) bar.hidden = !on;
     $('vHint').hidden = on;
+    refreshTools(); updateStaffUI();
     updateAgentBar();
     if (!on) cancelTool();
   }
@@ -871,6 +1073,7 @@
   }
   async function toolCover() {
     const v = visit.viewer, l = visit.listing;
+    if (!canEditListing(l) && l.cover) return;
     const blob = await v.capture(1280, 800, v.view.yaw, v.view.pitch, Math.min(80, v.view.fov), [visit.markers, visit.badge]);
     if (!blob) { toast('La capture a échoué.'); return; }
     if (l.cover) dropMedia(l.cover);
@@ -897,7 +1100,7 @@
       return el('div', { class: 'roomitem' }, [
         el('span', { class: 'thumb', style: { backgroundImage: t ? 'url("' + mediaURL(t.imageSmall || t.image) + '")' : '' } }),
         el('div', {}, [el('b', { text: 'Vers ' + (t ? t.name : '?') })]),
-        el('div', { class: 'acts' }, [iconBtn('pencil', 'Modifier', () => openLinkSheet(link))])
+        el('div', { class: 'acts' }, [canEditLink(l, p, link) ? iconBtn('pencil', 'Modifier', () => openLinkSheet(link)) : null])
       ]);
     }));
     openSheet('Passages de « ' + p.name + ' »', [
@@ -921,14 +1124,16 @@
       }
       closeSheet();
     };
+    const editable = canEditLink(l, p, link);
+    if (!editable) sel.disabled = true;
     openSheet(isNew ? 'Nouveau passage' : 'Passage', [
       field('Mène vers', sel),
       el('label', { class: 'field', style: { gridTemplateColumns: 'auto 1fr', alignItems: 'center', display: 'grid', gap: '8px' } }, [back, el('span', { text: 'Ajouter aussi le passage retour', style: { textTransform: 'none', letterSpacing: '0', fontSize: '15px' } })]),
       el('p', { class: 'help', text: 'Le passage retour est placé dans la direction opposée. Pour qu’il tombe juste, règle l’orientation des deux pièces (bouton Orientation).' })
     ], [
       el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: finish }),
-      el('button', { type: 'button', class: 'btn', text: 'Déplacer', onclick: () => { closeSheet(); startTool('move-link', 'Clique sur le sol là où déplacer le cercle', link); } }),
-      el('button', { type: 'button', class: 'btn danger', text: 'Supprimer', onclick: () => { p.links = p.links.filter(x => x !== link); buildLinks(); markDirty(); closeSheet(); } })
+      editable ? el('button', { type: 'button', class: 'btn', text: 'Déplacer', onclick: () => { closeSheet(); startTool('move-link', 'Clique sur le sol là où déplacer le cercle', link); } }) : null,
+      editable ? el('button', { type: 'button', class: 'btn danger', text: 'Supprimer', onclick: () => { p.links = p.links.filter(x => x !== link); buildLinks(); markDirty(); closeSheet(); } }) : null
     ]);
   }
   function openNorthSheet() {
@@ -948,26 +1153,35 @@
     const box = el('div', { class: 'roomlist' });
     const render = () => {
       box.innerHTML = '';
+      const el_ = canEditListing(l);
       l.points.forEach((p, i) => {
-        const name = el('input', { value: p.name, 'aria-label': 'Nom de la pièce', style: { width: '100%', border: '1px solid var(--line)', borderRadius: '6px', padding: '5px 8px', fontFamily: 'var(--label)', fontWeight: 700, fontSize: '16px' }, oninput: e => { p.name = e.target.value; markDirty(); buildLinks(); setVisitTexts(); } });
+        const ep = canEditPoint(l, p);
+        const name = el('input', { value: p.name, disabled: !ep, 'aria-label': 'Nom de la pièce', style: { width: '100%', border: '1px solid var(--line)', borderRadius: '6px', padding: '5px 8px', fontFamily: 'var(--label)', fontWeight: 700, fontSize: '16px' }, oninput: e => { p.name = e.target.value; markDirty(); buildLinks(); setVisitTexts(); } });
         box.append(el('div', { class: 'roomitem' + (p === visit.point ? ' current' : '') }, [
           el('span', { class: 'thumb', style: { backgroundImage: 'url("' + mediaURL(p.imageSmall || p.image) + '")' } }),
           el('div', {}, [name, el('small', { text: (l.start === p.id ? 'Départ de la visite' : '') })]),
           el('div', { class: 'acts' }, [
             iconBtn('eye', 'Aller dans cette pièce', () => jumpTo(p)),
             iconBtn(l.start === p.id ? 'starFill' : 'star', 'Commencer la visite ici', () => { l.start = p.id; markDirty(); render(); }),
-            iconBtn('up', 'Monter', () => { if (i > 0) { l.points.splice(i, 1); l.points.splice(i - 1, 0, p); markDirty(); render(); setVisitTexts(); } }),
-            iconBtn('image', 'Remplacer l’image 360°', () => { closeSheet(); openWizard(l, p); }),
-            iconBtn('trash', 'Supprimer la pièce', () => deletePoint(l, p, render))
+            el_ ? iconBtn('up', 'Monter', () => { if (i > 0) { l.points.splice(i, 1); l.points.splice(i - 1, 0, p); markDirty(); render(); setVisitTexts(); } }) : null,
+            ep ? iconBtn('image', 'Remplacer l’image 360°', () => { closeSheet(); openWizard(l, p); }) : null,
+            isAdmin() ? iconBtn('trash', 'Supprimer la pièce', () => deletePoint(l, p, render)) : null
           ])
         ]));
       });
     };
     render();
-    openSheet('Pièces de « ' + l.name + ' »', [box], [
+    openSheet('Pièces de « ' + l.name + ' »', [startPicker(l, render), box], [
       el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }),
       el('button', { type: 'button', class: 'btn', text: 'Infos du bien', onclick: () => openListingSheet(l) })
     ]);
+  }
+  // pièce dans laquelle le visiteur apparaît en ouvrant la visite (modifiable par l'admin et les gérants)
+  function startPicker(l, onChange) {
+    const sel = el('select', {
+      id: 'startRoom', onchange: e => { l.start = e.target.value; markDirty(); renderCatalog(); onChange && onChange(); toast('La visite commencera dans « ' + (pointOf(l, l.start) || {}).name + ' ».'); }
+    }, l.points.map(p => el('option', { value: p.id, text: p.name, selected: (l.start || (l.points[0] && l.points[0].id)) === p.id })));
+    return field('Pièce de départ de la visite', sel, 'C’est la pièce dans laquelle on apparaît en ouvrant la visite.');
   }
   async function deletePoint(l, p, rerender) {
     const ok = await confirmBox('Supprimer « ' + p.name + ' » ?', 'La pièce, ses étiquettes et les passages qui y mènent seront supprimés.', 'Supprimer');
@@ -1215,6 +1429,7 @@
       if (!p) {
         const id = uniqueId(slugify(name || 'piece'), l.points.map(q => q.id));
         p = { id, name: (name || 'Pièce').trim() || 'Pièce', image: null, imageSmall: null, north: 0, yaw: 0, pitch: -4, pins: [], links: [] };
+        if (me()) p.createdBy = me();
         l.points.push(p);
         if (!l.start) l.start = p.id;
       } else { dropMedia(p.image); dropMedia(p.imageSmall); }

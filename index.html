@@ -11,6 +11,7 @@
 <meta property="og:url" content="https://nilowoff.github.io/dynasty8/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#025934">
+<meta name="d8-api" content="https://dynasty8-api.phares-al01.workers.dev">
 <link rel="icon" href="logo.png">
 <title>Catalogue Dynasty 8</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -280,6 +281,21 @@ button { cursor: pointer; }
 }
 .field textarea { min-height: 96px; resize: vertical; }
 .field .help { font-size: 13px; color: var(--ink-3); }
+.field input:disabled, .field select:disabled, .field textarea:disabled { background: var(--paper); color: var(--ink-2); }
+.subhead { margin: 6px 0 -4px; font-family: var(--label); font-weight: 700; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--green); }
+.stafflist { display: grid; gap: 8px; }
+.staffitem {
+  display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+.staffitem .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--green); color: var(--sun); display: grid; place-items: center; font-family: var(--display); font-size: 18px; }
+.staffitem b { font-family: var(--label); font-weight: 700; font-size: 16px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.staffitem small { color: var(--ink-3); font-size: 12px; }
+.staffitem select { border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 5px 6px; font-family: var(--label); font-weight: 700; font-size: 14px; }
+.staffitem .acts { display: flex; gap: 4px; }
+.staffitem .acts button { width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); display: grid; place-items: center; padding: 0; }
+.staffitem .acts svg { width: 16px; height: 16px; }
+@media (max-width: 420px) { .staffitem { grid-template-columns: 36px minmax(0, 1fr) auto; } .staffitem .acts { grid-column: 2 / -1; justify-content: flex-end; } }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row2 > * { min-width: 0; }
 .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -372,8 +388,8 @@ button { cursor: pointer; }
     <img class="logo" src="logo.png" alt="Dynasty 8" width="104" height="54">
     <div class="top-actions">
       <button class="btn" id="agentBtn" type="button" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-        <span>Mode agent</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+        <span>Espace employé</span>
       </button>
     </div>
   </div>
@@ -381,11 +397,12 @@ button { cursor: pointer; }
 
 <div class="agentbar" id="agentbar" hidden>
   <div class="agentbar-inner">
-    <span class="tag">Mode agent</span>
+    <span class="tag" id="agentTag">Mode agent</span>
     <span class="state" id="agentState">Aucune modification</span>
     <button class="btn primary" id="saveBtn" type="button" disabled>Enregistrer</button>
+    <button class="btn" id="staffBtn" type="button" hidden>Comptes</button>
+    <button class="btn" id="accountBtn" type="button" hidden>Mon compte</button>
     <button class="btn ghost" id="agentExit" type="button">Quitter</button>
-    <button class="btn ghost" id="agentLogout" type="button" hidden>Déconnexion</button>
   </div>
 </div>
 
@@ -400,7 +417,7 @@ button { cursor: pointer; }
   <div class="grid" id="grid"></div>
   <p class="empty" id="empty" hidden>Aucun bien ne correspond à ces critères.</p>
 </main>
-<p class="foot">Visites 360° réalisées à partir de captures en jeu. <button type="button" id="agentLink" hidden style="border:0;background:none;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">Espace agent</button></p>
+<p class="foot">Visites 360° réalisées à partir de captures en jeu.</p>
 
 <section class="visit" id="visit" hidden>
   <div class="stage" id="stage" role="img" aria-label="Vue à 360 degrés. Glissez ou utilisez les flèches du clavier pour regarder autour."></div>
