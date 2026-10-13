@@ -1,0 +1,8 @@
+# Utilisé pour les tests en local (npx wrangler dev). Le serveur en ligne est créé depuis le tableau de bord Cloudflare.
+name = "dynasty8-api"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[[kv_namespaces]]
+binding = "DB"
+id = "local-dev"
