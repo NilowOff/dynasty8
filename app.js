@@ -107,12 +107,14 @@
   function kindOf(l) { return (l.type || 'Bien') + ' en ' + (DEALS[l.deal] || 'Vente').toLowerCase(); }
 
   // accueil : le panorama du bien à l'affiche défile lentement (une image 360° se raccorde à elle-même)
-  let heroImg = null;
+  let heroImg = null, heroPick = null;
   function renderHero() {
     const d = state.data; if (!d || !$('hero')) return;
     const open = d.listings.filter(l => l.points.length && (l.status === 'disponible' || l.status === 'reserve'));
     const pool = open.length ? open : d.listings.filter(l => l.points.length);
-    const f = pool.slice().sort((a, b) => (b.order || 0) - (a.order || 0))[0];
+    // un bien tiré au hasard à chaque visite du site (il reste le même pendant la navigation)
+    let f = pool.find(l => l.id === heroPick);
+    if (!f && pool.length) { f = pool[Math.floor(Math.random() * pool.length)]; heroPick = f.id; }
     const fe = $('heroFeature');
     let url = 'pano_2k.jpg';
     if (f) {
