@@ -435,6 +435,7 @@
     const tag = $('agentTag');
     if (tag) tag.textContent = u ? u.username + ' (' + (ROLE_NAMES[u.role] || u.role) + ')' : 'Mode agent';
     if ($('staffBtn')) $('staffBtn').hidden = !(u && u.role === 'admin');
+    if ($('histBtn')) $('histBtn').hidden = !(u && u.role === 'admin');
     if ($('accountBtn')) $('accountBtn').hidden = !u;
     const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? ROLE_NAMES[u.role] : 'Mode agent';
   }
@@ -629,6 +630,7 @@
   $('agentBtn').addEventListener('click', () => { if (state.canEdit) setAgent(true); else if (API) openLogin(); });
   $('agentExit').addEventListener('click', () => setAgent(false));
   if ($('staffBtn')) $('staffBtn').addEventListener('click', openStaffSheet);
+  if ($('histBtn')) $('histBtn').addEventListener('click', openHistory);
   if ($('accountBtn')) $('accountBtn').addEventListener('click', openAccountSheet);
   $('saveBtn').addEventListener('click', save);
   window.addEventListener('beforeunload', e => { if (state.canEdit && isDirty()) { e.preventDefault(); e.returnValue = ''; } });
@@ -796,7 +798,7 @@
     l.id = uniqueId(slugify(l.name), state.data.listings.filter(x => x !== l).map(x => x.id).concat(saved));
   }
   async function deleteListing(l) {
-    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', 'Le bien et toutes ses pièces seront retirés du catalogue au prochain enregistrement.', 'Supprimer');
+    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', 'Le bien et toutes ses pièces seront retirés du catalogue au prochain enregistrement. Un admin pourra le restaurer depuis l’Historique.', 'Supprimer');
     if (!ok) return;
     mediaOfListing(l).forEach(dropMedia);
     state.data.listings = state.data.listings.filter(x => x !== l);
@@ -1519,13 +1521,95 @@
     }
   }
 
+  function normalizeListing(l) {
+    if (OLD_TYPES[l.type]) l.type = OLD_TYPES[l.type];
+    delete l.district; delete l.surface; delete l.rooms; delete l.garage;
+    l.points = l.points || []; l.points.forEach(p => { p.pins = p.pins || []; p.links = p.links || []; });
+  }
   function normalize(d) {
-    d.listings.forEach(l => {
-      if (OLD_TYPES[l.type]) l.type = OLD_TYPES[l.type];
-      delete l.district; delete l.surface; delete l.rooms; delete l.garage;
-      l.points = l.points || []; l.points.forEach(p => { p.pins = p.pins || []; p.links = p.links || []; });
-    });
+    d.listings.forEach(normalizeListing);
     fillSite(d);
+  }
+
+  // ------------------------------------------------------------------ historique (admin) : biens supprimés et journal
+  function whenText(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  }
+  function dayLabel(iso) {
+    const d = new Date(iso), t = new Date(), y = new Date(); y.setDate(t.getDate() - 1);
+    const same = (a, b) => a.toDateString() === b.toDateString();
+    if (same(d, t)) return 'Aujourd’hui';
+    if (same(d, y)) return 'Hier';
+    return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+  async function openHistory() {
+    const trashBox = el('div', { class: 'stafflist' }, [el('p', { class: 'help', text: 'Chargement…' })]);
+    const logBox = el('div', { class: 'loglist' });
+    const err = el('p', { class: 'note error', hidden: true });
+    openSheet('Historique', [
+      el('h4', { class: 'subhead', text: 'Biens supprimés' }),
+      el('p', { class: 'help', text: 'Un bien supprimé reste ici avec toutes ses pièces et ses images, jusqu’à ce que tu le restaures ou que tu le supprimes définitivement.' }),
+      trashBox, err,
+      el('h4', { class: 'subhead', text: 'Dernières modifications' }),
+      logBox
+    ]);
+    const drawTrash = items => {
+      if (!items.length) { fill(trashBox, [el('p', { class: 'note', text: 'Aucun bien supprimé pour le moment.' })]); return; }
+      fill(trashBox, items.map(t => {
+        const pr = priceParts(t);
+        return el('div', { class: 'trashitem' }, [
+          el('span', { class: 'thumb', style: t.cover ? { backgroundImage: 'url("' + mediaURL(t.cover) + '")' } : {} }),
+          el('div', {}, [
+            el('b', { text: t.name || 'Sans nom' }),
+            el('small', { text: kindOf(t) + ', ' + pr.text + (pr.per || '') + ', ' + t.rooms + (t.rooms > 1 ? ' pièces' : ' pièce') }),
+            el('small', { text: 'Supprimé le ' + whenText(t.deletedAt) + ' par ' + t.deletedBy })
+          ]),
+          el('div', { class: 'trashacts' }, [
+            el('button', { type: 'button', class: 'btn primary', text: 'Restaurer', onclick: e => restoreListing(t, e.currentTarget) }),
+            el('button', {
+              type: 'button', class: 'btn danger', text: 'Supprimer définitivement', onclick: async () => {
+                if (!(await confirmBox('Supprimer définitivement « ' + t.name + ' » ?', 'Le bien, ses pièces et ses images seront effacés pour de bon. Impossible de revenir en arrière.', 'Supprimer définitivement'))) return;
+                try { drawTrash((await api('DELETE', '/api/trash/' + encodeURIComponent(t.id))).items); toast('« ' + t.name + ' » a été supprimé définitivement.'); loadLog(); }
+                catch (x) { err.textContent = x.message; err.hidden = false; }
+              }
+            })
+          ])
+        ]);
+      }));
+    };
+    const loadLog = async () => {
+      try {
+        const items = (await api('GET', '/api/log')).items.slice(0, 120);
+        if (!items.length) { fill(logBox, [el('p', { class: 'help', text: 'Rien pour le moment.' })]); return; }
+        const kids = []; let last = null;
+        items.forEach(x => {
+          const lab = dayLabel(x.at);
+          if (lab !== last) { kids.push(el('p', { class: 'logday', text: lab.charAt(0).toUpperCase() + lab.slice(1) })); last = lab; }
+          kids.push(el('div', { class: 'logitem' }, [
+            el('time', { datetime: x.at, text: new Date(x.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) }),
+            el('p', {}, [el('b', { text: x.by }), ' ' + x.text])
+          ]));
+        });
+        fill(logBox, kids);
+      } catch (x) { fill(logBox, [el('p', { class: 'note error', text: x.message })]); }
+    };
+    const restoreListing = async (t, btn) => {
+      btn.disabled = true; err.hidden = true;
+      try {
+        const r = await api('POST', '/api/trash/' + encodeURIComponent(t.id) + '/restore', {});
+        const l = r.listing; normalizeListing(l);
+        // le bien revient dans le catalogue sans toucher aux modifications en cours
+        if (!listing(l.id)) state.data.listings.push(l);
+        const base = JSON.parse(state.saved);
+        if (!base.listings.some(x => x.id === l.id)) { base.listings.push(JSON.parse(JSON.stringify(l))); state.saved = JSON.stringify(base); }
+        renderCatalog(); refreshPage(); updateAgentBar();
+        toast('« ' + l.name + ' » est de retour dans le catalogue.', 4500);
+        drawTrash((await api('GET', '/api/trash')).items); loadLog();
+      } catch (x) { err.textContent = x.message; err.hidden = false; btn.disabled = false; }
+    };
+    try { drawTrash((await api('GET', '/api/trash')).items); } catch (x) { fill(trashBox, []); err.textContent = x.message; err.hidden = false; }
+    loadLog();
   }
 
   // ------------------------------------------------------------------ pages du site

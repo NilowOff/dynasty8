@@ -69,11 +69,20 @@ async function route(request, env, ctx) {
   if (path === '/api/password' && m === 'POST') return changeOwnPassword(request, env, me);
   if (path.startsWith('/api/media/') && m === 'PUT') return putMedia(request, env, me, path.slice('/api/'.length));
   if (path === '/api/save' && m === 'POST') return save(request, env, me);
+  if (path === '/api/log' || path === '/api/trash' || path.startsWith('/api/trash/')) {
+    if (me.role !== 'admin') deny('Seul un admin peut voir l’historique.');
+    if (path === '/api/log' && m === 'GET') return json({ items: await getJSON(env, 'log', []) });
+    if (path === '/api/trash' && m === 'GET') return listTrash(env);
+    const rest = path.slice('/api/trash/'.length).split('/');
+    const id = decodeURIComponent(rest[0] || '');
+    if (id && rest[1] === 'restore' && m === 'POST') return restoreTrash(env, me, id);
+    if (id && rest.length === 1 && m === 'DELETE') return purgeTrash(env, me, id);
+  }
   if (path === '/api/staff' || path.startsWith('/api/staff/')) {
     if (me.role !== 'admin') deny('Seul un admin peut gérer les comptes.');
     const name = decodeURIComponent(path.slice('/api/staff/'.length) || '');
     if (path === '/api/staff' && m === 'GET') return listStaff(env);
-    if (path === '/api/staff' && m === 'POST') return createStaff(request, env);
+    if (path === '/api/staff' && m === 'POST') return createStaff(request, env, me);
     if (name && m === 'PATCH') return updateStaff(request, env, me, name);
     if (name && m === 'DELETE') return deleteStaff(env, me, name);
   }
@@ -132,20 +141,131 @@ async function save(request, env, me) {
 
   const deletes = Array.isArray(body.deletes) ? body.deletes : [];
   if (deletes.length && me.role !== 'admin') deny('Un gérant ne peut rien supprimer.');
-  const used = new Set();
-  next.listings.forEach(l => { used.add(l.cover); l.points.forEach(p => { used.add(p.image); used.add(p.imageSmall); }); });
-  if (next.site) { next.site.home.photos.forEach(x => used.add(x)); next.site.team.members.forEach(m => used.add(m.photo)); }
+  const now = new Date().toISOString();
+  // biens supprimés : gardés dans la corbeille (avec leurs images) pour pouvoir les restaurer
+  const removed = cur.listings.filter(l => !next.listings.some(x => x.id === l.id));
+  let trash = null;
+  if (removed.length || deletes.length) trash = await getJSON(env, 'trash', []);
+  removed.forEach(l => trash.unshift({ id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), listing: l, deletedAt: now, deletedBy: me.username }));
+  const used = usedMedia(next, trash || []);
   const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !used.has(p));
+  const changes = describeChanges(cur, next);
 
   next.version = 1;
   next.rev = (cur.rev || 0) + 1;
-  next.updated = new Date().toISOString();
+  next.updated = now;
   next.updatedBy = me.username;
   const out = JSON.stringify(next, null, 1);
   if (out.length > MAX_DATA) throw new HttpError(413, 'too_large', 'Catalogue trop volumineux.');
   await env.DB.put('data', out);
+  if (removed.length) await env.DB.put('trash', JSON.stringify(trash));
   await Promise.all(toDelete.map(k => env.DB.delete(k)));
+  await addLog(env, me.username, changes);
   return json({ ok: true, data: next });
+}
+
+// ------------------------------------------------------------------ historique : corbeille et journal
+async function getJSON(env, key, def) {
+  const t = await env.DB.get(key);
+  if (!t) return def;
+  try { return JSON.parse(t); } catch (e) { return def; }
+}
+function mediaOfListing(l) {
+  const out = [l.cover];
+  (l.points || []).forEach(p => out.push(p.image, p.imageSmall));
+  return out.filter(x => typeof x === 'string' && MEDIA_RE.test(x));
+}
+// images encore utilisées : catalogue, pages du site, biens dans la corbeille
+function usedMedia(data, trash) {
+  const used = new Set();
+  data.listings.forEach(l => mediaOfListing(l).forEach(x => used.add(x)));
+  if (data.site) { (data.site.home.photos || []).forEach(x => used.add(x)); (data.site.team.members || []).forEach(m => used.add(m.photo)); }
+  trash.forEach(t => mediaOfListing(t.listing).forEach(x => used.add(x)));
+  return used;
+}
+async function addLog(env, by, texts) {
+  if (!texts.length) return;
+  const at = new Date().toISOString();
+  const log = await getJSON(env, 'log', []);
+  const shown = texts.length > 12 ? texts.slice(0, 11).concat(['a fait ' + (texts.length - 11) + ' autres changements']) : texts;
+  await env.DB.put('log', JSON.stringify(shown.map(text => ({ at, by, text })).concat(log).slice(0, 300)));
+}
+const STATUS_NAMES = { disponible: 'Disponible', reserve: 'Réservé', vendu: 'Vendu', loue: 'Loué' };
+const SITE_PAGES = { home: 'Accueil', info: 'Informations', team: 'Qui sommes-nous ?', recruit: 'Recrutements', calendar: 'Calendrier', faq: 'Réponses FAQ' };
+function priceTxt(l) {
+  const f = v => Math.round(v).toLocaleString('fr-FR') + ' $';
+  if (l.price === null && l.priceMax === null) return 'sur demande';
+  if (l.price !== null && l.priceMax !== null && l.priceMax > l.price) return f(l.price) + ' – ' + f(l.priceMax);
+  return f(l.price !== null ? l.price : l.priceMax);
+}
+// résumé lisible de ce qu'un enregistrement a changé
+function describeChanges(cur, next) {
+  const out = [], q = s => '« ' + (s || 'Sans nom') + ' »';
+  const curL = new Map(cur.listings.map(l => [l.id, l])), nextL = new Map(next.listings.map(l => [l.id, l]));
+  next.listings.forEach(l => { if (!curL.has(l.id)) out.push('a créé le bien ' + q(l.name) + (l.points.length ? ' (' + l.points.length + (l.points.length > 1 ? ' pièces)' : ' pièce)') : '')); });
+  cur.listings.forEach(l => { if (!nextL.has(l.id)) out.push('a supprimé le bien ' + q(l.name)); });
+  next.listings.forEach(l => {
+    const c = curL.get(l.id); if (!c) return;
+    const cp = new Map(c.points.map(p => [p.id, p])), np = new Map(l.points.map(p => [p.id, p]));
+    l.points.forEach(p => { if (!cp.has(p.id)) out.push('a ajouté la pièce ' + q(p.name) + ' dans ' + q(l.name)); });
+    c.points.forEach(p => { if (!np.has(p.id)) out.push('a supprimé la pièce ' + q(p.name) + ' de ' + q(l.name)); });
+    if (c.price !== l.price || (c.priceMax ?? null) !== (l.priceMax ?? null)) out.push('a changé le prix de ' + q(l.name) + ' : ' + priceTxt({ price: c.price, priceMax: c.priceMax ?? null }) + ' → ' + priceTxt({ price: l.price, priceMax: l.priceMax ?? null }));
+    if (c.status !== l.status) out.push('a passé ' + q(l.name) + ' en « ' + (STATUS_NAMES[l.status] || l.status) + ' »');
+    if (c.start && c.start !== l.start && np.has(l.start)) out.push('a choisi « ' + np.get(l.start).name + ' » comme pièce de départ de ' + q(l.name));
+    if (c.cover && c.cover !== l.cover) out.push('a changé la photo de couverture de ' + q(l.name));
+    const strip = x => { const { points, price, priceMax, status, start, cover, ...r } = x; return r; };
+    if (!eq(strip(c), strip(l))) out.push('a modifié les infos de ' + q(l.name));
+    const edited = l.points.filter(p => cp.has(p.id) && !eq(p, cp.get(p.id)));
+    if (edited.length) out.push('a modifié la visite de ' + q(l.name) + ' (' + edited.map(p => p.name).join(', ') + ')');
+  });
+  const cs = cur.site, ns = next.site;
+  if (!cs && ns) out.push('a modifié les pages du site');
+  else if (cs && ns) Object.keys(SITE_PAGES).forEach(k => {
+    if (eq(cs[k], ns[k])) return;
+    if (k === 'recruit' && cs.recruit.open !== ns.recruit.open) out.push('a passé les recrutements en « ' + (ns.recruit.open ? 'Ouverts' : 'Fermés') + ' »');
+    else if (k === 'calendar' && cs.calendar.intro === ns.calendar.intro) out.push('a modifié le calendrier du Rooftop');
+    else out.push('a modifié la page « ' + SITE_PAGES[k] + ' »');
+  });
+  return out;
+}
+async function listTrash(env) {
+  const trash = await getJSON(env, 'trash', []);
+  return json({ items: trash.map(t => ({
+    id: t.id, deletedAt: t.deletedAt, deletedBy: t.deletedBy,
+    name: t.listing.name, type: t.listing.type, deal: t.listing.deal, period: t.listing.period,
+    price: t.listing.price, priceMax: t.listing.priceMax ?? null, cover: t.listing.cover, rooms: (t.listing.points || []).length
+  })) });
+}
+async function restoreTrash(env, me, id) {
+  const trash = await getJSON(env, 'trash', []);
+  const i = trash.findIndex(t => t.id === id);
+  if (i < 0) throw new HttpError(404, 'not_found', 'Ce bien n’est plus dans l’historique.');
+  const cur = await currentData(env);
+  sanitize(cur, true);
+  const l = { ...trash[i].listing };
+  const base = l.id; let k = 2;
+  while (cur.listings.some(x => x.id === l.id)) l.id = (base + '-' + k++).slice(0, 60);
+  cur.listings.push(l);
+  sanitize(cur, true);
+  cur.rev = (cur.rev || 0) + 1; cur.updated = new Date().toISOString(); cur.updatedBy = me.username;
+  await env.DB.put('data', JSON.stringify(cur, null, 1));
+  trash.splice(i, 1);
+  await env.DB.put('trash', JSON.stringify(trash));
+  await addLog(env, me.username, ['a restauré le bien « ' + (l.name || 'Sans nom') + ' »']);
+  return json({ ok: true, listing: cur.listings.find(x => x.id === l.id) });
+}
+async function purgeTrash(env, me, id) {
+  const trash = await getJSON(env, 'trash', []);
+  const i = trash.findIndex(t => t.id === id);
+  if (i < 0) throw new HttpError(404, 'not_found', 'Ce bien n’est plus dans l’historique.');
+  const [entry] = trash.splice(i, 1);
+  const cur = await currentData(env);
+  sanitize(cur, true);
+  const used = usedMedia(cur, trash);
+  await env.DB.put('trash', JSON.stringify(trash));
+  await Promise.all(mediaOfListing(entry.listing).filter(x => !used.has(x)).map(x => env.DB.delete(x)));
+  await addLog(env, me.username, ['a supprimé définitivement le bien « ' + (entry.listing.name || 'Sans nom') + ' »']);
+  return listTrash(env);
 }
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -426,7 +546,7 @@ async function listStaff(env) {
   const staff = await getStaff(env);
   return json({ users: Object.values(staff.users).map(u => ({ username: u.username, role: u.role, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
-async function createStaff(request, env) {
+async function createStaff(request, env, me) {
   const body = await readJson(request);
   const username = cleanUsername(body.username);
   if (!ROLES.includes(body.role)) bad('Grade inconnu.');
@@ -435,6 +555,7 @@ async function createStaff(request, env) {
   if (staff.users[username]) bad('Cet identifiant est déjà pris.');
   staff.users[username] = await makeUser(username, body.password, body.role);
   await putStaff(env, staff);
+  await addLog(env, me.username, ['a créé le compte de ' + username + ' (' + (body.role === 'admin' ? 'Admin' : 'Gérant') + ')']);
   return listStaff(env);
 }
 const adminCount = staff => Object.values(staff.users).filter(u => u.role === 'admin').length;
@@ -443,17 +564,20 @@ async function updateStaff(request, env, me, name) {
   const staff = await getStaff(env);
   const u = staff.users[name];
   if (!u) throw new HttpError(404, 'not_found', 'Compte introuvable.');
+  const logs = [];
   if (body.role !== undefined) {
     if (!ROLES.includes(body.role)) bad('Grade inconnu.');
     if (u.role === 'admin' && body.role !== 'admin' && adminCount(staff) <= 1) bad('Il faut garder au moins un admin.');
-    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; }
+    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; logs.push('a changé le grade de ' + name + ' : ' + (body.role === 'admin' ? 'Admin' : 'Gérant')); }
   }
   if (body.password !== undefined) {
     checkNewPassword(body.password);
     const nu = await makeUser(u.username, body.password, u.role);
     u.salt = nu.salt; u.hash = nu.hash; u.v = (u.v || 1) + 1;
+    logs.push('a réinitialisé le mot de passe de ' + name);
   }
   await putStaff(env, staff);
+  await addLog(env, me.username, logs);
   return listStaff(env);
 }
 async function deleteStaff(env, me, name) {
@@ -462,5 +586,6 @@ async function deleteStaff(env, me, name) {
   if (!staff.users[name]) throw new HttpError(404, 'not_found', 'Compte introuvable.');
   delete staff.users[name];
   await putStaff(env, staff);
+  await addLog(env, me.username, ['a supprimé le compte de ' + name]);
   return listStaff(env);
 }

@@ -426,6 +426,21 @@ button.day:hover { border-color: var(--ink-3); }
 .faq .answer .rich { font-size: 16px; }
 @media (max-width: 640px) { .faq .answer { padding-left: 20px; } .faq summary { font-size: 17px; } }
 
+/* historique (admin) */
+.trashitem { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px 12px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.trashitem .thumb { width: 64px; height: 48px; border-radius: 8px; background: var(--paper) center / cover no-repeat; }
+.trashitem b { display: block; font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 17px; }
+.trashitem small { display: block; color: var(--ink-3); font-size: 13px; line-height: 1.4; }
+.trashacts { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.trashacts .btn { min-height: 34px; font-size: 15px; }
+.loglist { display: grid; gap: 2px; }
+.logday { margin: 10px 0 4px; font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 15px; color: var(--ink-3); }
+.logday:first-child { margin-top: 0; }
+.logitem { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
+.logitem time { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.logitem p { margin: 0; color: var(--ink-2); }
+.logitem b { color: var(--ink); }
+
 /* éditeurs des pages (admin) */
 .ed-item { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
 .ed-item .ed-acts { display: flex; gap: 6px; justify-content: flex-end; }
@@ -697,6 +712,7 @@ button.day:hover { border-color: var(--ink-3); }
     <span class="state" id="agentState">Aucune modification</span>
     <button class="btn primary" id="saveBtn" type="button" disabled>Enregistrer</button>
     <button class="btn" id="staffBtn" type="button" hidden>Comptes</button>
+    <button class="btn" id="histBtn" type="button" hidden>Historique</button>
     <button class="btn" id="accountBtn" type="button" hidden>Mon compte</button>
     <button class="btn ghost" id="agentExit" type="button">Quitter</button>
   </div>
