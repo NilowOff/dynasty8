@@ -879,7 +879,7 @@
     if (!l.points.length) {
       link.removeAttribute('href');
       link.addEventListener('click', () => openListingSheet(l));
-      photo.append(el('span', { class: 'sunbadge', style: { background: '#fff' } }, ['+', el('small', { text: 'pièce' })]));
+      photo.append(el('span', { class: 'sunbadge', style: { background: 'var(--card)', color: 'var(--ink)' } }, ['+', el('small', { text: 'pièce' })]));
     }
     const card = el('article', { class: 'card' }, [link]);
     if (state.agent) {
@@ -1330,7 +1330,7 @@
     $('vtools').hidden = !on;
     let bar = $('vAgent');
     if (on && !bar) {
-      bar = el('div', { id: 'vAgent', style: { position: 'absolute', zIndex: 7, top: 'calc(env(safe-area-inset-top, 0px) + 16px)', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', alignItems: 'center', background: 'var(--sun)', color: 'var(--ink)', borderRadius: '999px', padding: '4px 4px 4px 12px', boxShadow: '0 6px 18px rgba(0,0,0,.3)' } }, [
+      bar = el('div', { id: 'vAgent', style: { position: 'absolute', zIndex: 7, top: 'calc(env(safe-area-inset-top, 0px) + 16px)', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', alignItems: 'center', background: 'var(--sun)', color: 'var(--on-sun)', borderRadius: '999px', padding: '4px 4px 4px 12px', boxShadow: '0 6px 18px rgba(0,0,0,.3)' } }, [
         el('span', { class: 'tag', text: state.user ? ROLE_NAMES[state.user.role] : 'Mode agent', style: { fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: '12px' } }),
         el('button', { id: 'vSave', type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: save, style: { minHeight: '32px' } })
       ]);
@@ -2030,6 +2030,25 @@
       if (a.dataset.page === currentPage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
   }
+  // ---- mode sombre (bouton lune / soleil dans l'en-tête)
+  const themeNow = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  function logoSrc() { return themeNow() === 'dark' ? 'logo-sombre.png' : 'logo.png'; }
+  function showTheme() {
+    const dark = themeNow() === 'dark', b = $('themeBtn');
+    b.setAttribute('aria-pressed', String(dark));
+    b.setAttribute('aria-label', dark ? 'Passer en mode clair' : 'Passer en mode sombre'); b.title = b.getAttribute('aria-label');
+    const meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.setAttribute('content', dark ? '#0C1310' : '#025934');
+  }
+  function setTheme(t, keep) {
+    document.documentElement.dataset.theme = t;
+    if (keep) try { localStorage.setItem('d8-theme', t); } catch (e) { }
+    showTheme();
+    if (state.data) refreshPage();   // les éléments dessinés par le site (logo de l'affiche…) suivent
+  }
+  $('themeBtn').addEventListener('click', () => setTheme(themeNow() === 'dark' ? 'light' : 'dark', true));
+  // tant que le visiteur n'a rien choisi, on suit le réglage de son appareil
+  try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { let saved = null; try { saved = localStorage.getItem('d8-theme'); } catch (x) { } if (!saved) setTheme(e.matches ? 'dark' : 'light', false); }); } catch (e) { }
+  showTheme();
   $('navToggle').addEventListener('click', () => {
     const open = !$('mainnav').classList.contains('open');
     $('mainnav').classList.toggle('open', open); $('navToggle').setAttribute('aria-expanded', String(open));
@@ -2088,7 +2107,7 @@
       pageHead('Recrutements', s.intro),
       el('div', { class: 'recruit' + (s.open ? ' open' : ''), role: 'status' }, [
         el('span', { class: 'stripe a' }), el('span', { class: 'stripe b' }),
-        el('img', { src: 'logo.png', alt: 'Dynasty 8', width: 180, height: 94 }),
+        el('img', { src: logoSrc(), alt: 'Dynasty 8', width: 180, height: 94 }),
         el('p', { class: 'word', text: 'Recrutements' }),
         el('p', { class: 'state', text: s.open ? 'Ouverts' : 'Fermés' }),
         (s.open ? s.openText : s.closedText) ? el('p', { class: 'msg', text: s.open ? s.openText : s.closedText }) : null
