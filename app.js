@@ -91,18 +91,18 @@
     return id;
   }
   const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
-  // prix fixe, ou fourchette « 1 000 $ – 2 000 $ » quand un prix maximum est indiqué
+  // prix fixe, ou fourchette « 1 000 $ – 2 000 $ » quand un prix maximum est indiqué
   const isNum = v => v !== null && v !== undefined && v !== '' && !isNaN(+v);
   function priceParts(l) {
     const lo = isNum(l.price) ? +l.price : null, hi = isNum(l.priceMax) ? +l.priceMax : null;
     if (lo === null && hi === null) return { text: 'Prix sur demande', ask: true };
     const per = l.deal === 'location' ? ' / ' + (PERIODS[l.period] || 'semaine') : '';
-    const $$ = v => nf.format(v) + '\u00a0$';   // le montant et « $ » restent sur la même ligne
+    const $$ = v => nf.format(v) + '\u00a0$';   // le montant et « $ » restent sur la même ligne
     if (lo !== null && hi !== null && hi > lo) return { text: $$(lo) + ' – ' + $$(hi), per, range: true };
     if (lo === null) return { text: 'Jusqu’à ' + $$(hi), per, range: true };
     return { text: $$(lo), per };
   }
-  // option garage : supplément affiché sous le prix (« + Option garage : +750 $ / semaine »)
+  // option garage : supplément affiché sous le prix (« + Option garage : +750 $ / semaine »)
   function optionText(l) {
     const g = l.garagePrice;
     if (g === null || g === undefined || g === '' || isNaN(+g) || +g <= 0) return null;
@@ -112,7 +112,7 @@
     const t = optionText(l);
     return t ? el('p', { class: 'opt' }, ['Option garage : ', el('b', { text: t })]) : null;
   }
-  // « Bureaux en location », « Maison en vente »
+  // « Bureaux en location », « Maison en vente »
   function kindOf(l) { return l.deco ? 'Décoration par ' + decoName(l.deco) : (l.type || 'Bien') + ' en ' + (DEALS[l.deal] || 'Vente').toLowerCase(); }
   const hasPrice = l => isNum(l.price) || isNum(l.priceMax);
 
@@ -156,6 +156,17 @@
     if (!path) return '';
     if (state.urls.has(path)) return state.urls.get(path);
     return API && path.startsWith('media/') ? API + '/' + path : path;
+  }
+  // photo de profil ronde (ou initiales si la personne n'a pas mis de photo)
+  const initials = n => { const w = String(n || '').trim().split(/\s+/).filter(Boolean).map(x => Array.from(x)[0]); return w.length ? (w[0] + (w.length > 1 ? w[w.length - 1] : '')).toUpperCase() : '?'; };
+  function avatarEl(name, photo, cls) {
+    const a = el('span', { class: 'avatar' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true' });
+    if (photo) {
+      const img = el('img', { src: mediaURL(photo), alt: '', decoding: 'async' });
+      img.addEventListener('error', () => { a.textContent = initials(name); a.classList.remove('has-photo'); });
+      a.classList.add('has-photo'); a.append(img);
+    } else a.textContent = initials(name);
+    return a;
   }
   // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé
   // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé ;
@@ -443,7 +454,7 @@
   function updateStaffUI() {
     const u = state.user;
     const tag = $('agentTag');
-    if (tag) tag.textContent = u ? u.username + ' (' + (ROLE_NAMES[u.role] || u.role) + ')' : 'Mode agent';
+    if (tag) fill(tag, u ? [avatarEl(u.name || u.username, u.photo, 'xs'), u.username + ' (' + (ROLE_NAMES[u.role] || u.role) + ')'] : ['Mode agent']);
     if ($('staffBtn')) $('staffBtn').hidden = !(u && u.role === 'admin');
     if ($('histBtn')) $('histBtn').hidden = !(u && u.role === 'admin');
     if ($('accountBtn')) $('accountBtn').hidden = !u;
@@ -493,7 +504,7 @@
   const ROLE_HELP = {
     admin: 'Admin : tu peux tout faire, y compris gérer les comptes des employés et les pages du site.',
     gerant: 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés ; tu ne peux rien supprimer.',
-    decorateur: 'Décorateur : tu as ta propre catégorie dans « Décorateurs ». Tu y crées, modifies et supprimes tes décorations, et tu ne touches pas au reste du site.'
+    decorateur: 'Décorateur : tu as ta propre catégorie dans « Décorateurs ». Tu y crées, modifies et supprimes tes décorations, et tu ne touches pas au reste du site.'
   };
   function openAccountSheet() {
     const u = state.user; if (!u) return;
@@ -515,7 +526,16 @@
     };
     change.addEventListener('click', submit);
     inputEnter([cur, nw, nw2], submit);
+    const afterPhoto = r => {
+      useSession({ token: state.session, user: r.user });
+      if (r.user.role === 'decorateur') refreshData();
+      openAccountSheet();
+    };
     openSheet('Mon compte', [
+      photoBlock(u.name || u.username, u.photo, ROLE_NAMES[u.role],
+        u.role === 'decorateur' ? 'Elle s’affiche sur ta carte dans « Décorateurs » et en haut de ta catégorie.' : 'Elle s’affiche dans la barre employé et dans la liste des comptes.',
+        () => choosePhoto(async blob => afterPhoto(await api('PUT', '/api/me/photo', blob, 'image/jpeg')), openAccountSheet, 'Ma photo de profil'),
+        async () => afterPhoto(await api('DELETE', '/api/me/photo'))),
       el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: ROLE_NAMES[u.role] })])]),
       el('p', { class: 'help', text: ROLE_HELP[u.role] || '' }),
       el('h4', { class: 'subhead', text: 'Changer mon mot de passe' }),
@@ -539,13 +559,13 @@
         }, Object.entries(ROLE_NAMES).map(([v, t]) => el('option', { value: v, text: t, selected: u.role === v })));
         const self = u.username === me();
         box.append(el('div', { class: 'staffitem' }, [
-          el('span', { class: 'avatar', text: (u.name || u.username).slice(0, 1).toUpperCase() }),
+          avatarEl(u.name || u.username, u.photo),
           el('div', {}, [el('b', { text: (u.name || u.username) + (self ? ' (toi)' : '') }), el('small', { text: 'Identifiant : ' + u.username })]),
           role,
           el('div', { class: 'acts' }, [
             iconBtn('pencil', 'Modifier le compte de ' + u.username, () => openResetSheet(u)),
             self ? null : iconBtn('trash', 'Supprimer le compte de ' + u.username, async () => {
-              if (!(await confirmBox('Supprimer le compte « ' + u.username + ' » ?', 'Cette personne ne pourra plus se connecter. Les biens et pièces qu’elle a créés restent dans le catalogue.', 'Supprimer'))) return;
+              if (!(await confirmBox('Supprimer le compte « ' + u.username + ' » ?', 'Cette personne ne pourra plus se connecter. Les biens et pièces qu’elle a créés restent dans le catalogue.', 'Supprimer'))) return;
               try { render((await api('DELETE', '/api/staff/' + encodeURIComponent(u.username))).users); toast('Compte supprimé.'); } catch (x) { showErr(x); }
             })
           ])
@@ -561,7 +581,7 @@
       err.hidden = true; add.disabled = true;
       try {
         render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value, name: nn.value.trim() })).users);
-        toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.' + (nr.value === 'decorateur' ? ' Sa catégorie apparaît dans « Décorateurs ».' : ''), 6000);
+        toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.' + (nr.value === 'decorateur' ? ' Sa catégorie apparaît dans « Décorateurs ».' : ''), 6000);
         if (nr.value === 'decorateur') refreshData();
         nu.value = ''; np.value = ''; nn.value = '';
       } catch (x) { showErr(x); }
@@ -570,18 +590,26 @@
     add.addEventListener('click', create);
     inputEnter([nu, np, nn], create);
     openSheet('Comptes des employés', [
-      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer. Décorateur : a sa propre catégorie dans « Décorateurs » et n’y gère que ses décorations.' }),
+      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer. Décorateur : a sa propre catégorie dans « Décorateurs » et n’y gère que ses décorations.' }),
       box, err,
       el('h4', { class: 'subhead', text: 'Nouveau compte' }),
       field('Identifiant', nu, 'Sert à se connecter.'), field('Nom affiché', nn, 'Ex. Jean Dupont. C’est le nom de la catégorie d’un décorateur.'),
-      field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
+      field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
     ], [add]);
     box.append(el('p', { class: 'help', text: 'Chargement…' }));
     try { render((await api('GET', '/api/staff')).users); } catch (x) { box.innerHTML = ''; showErr(x); }
   }
-  function openResetSheet(u) {
-    const nn = el('input', { id: 'editName', value: u.name || u.username, maxlength: 40 });
-    const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Laisse vide pour ne pas le changer' });
+  function openResetSheet(u, draft) {
+    const nn = el('input', { id: 'editName', value: draft ? draft.name : (u.name || u.username), maxlength: 40 });
+    const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Laisse vide pour ne pas le changer', value: draft ? draft.pass : '' });
+    const back = () => openResetSheet(u, { name: nn.value, pass: np.value });
+    const afterPhoto = r => {
+      u.photo = r.user.photo;
+      if (u.username === me()) useSession({ token: state.session, user: r.user });
+      if (r.user.role === 'decorateur') refreshData();
+      back();
+    };
+    const photoPath = '/api/staff/' + encodeURIComponent(u.username) + '/photo';
     const err = el('p', { class: 'note error', hidden: true });
     const ok = el('button', {
       type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: async () => {
@@ -594,10 +622,92 @@
       }
     });
     openSheet('Compte de ' + u.username, [
+      photoBlock(u.name || u.username, u.photo, ROLE_NAMES[u.role], u.role === 'decorateur' ? 'Elle s’affiche sur sa carte dans « Décorateurs ».' : null,
+        () => choosePhoto(async blob => afterPhoto(await api('PUT', photoPath, blob, 'image/jpeg')), back, 'Photo de ' + (u.name || u.username)),
+        async () => afterPhoto(await api('DELETE', photoPath))),
       field('Nom affiché', nn, 'Pour un décorateur, c’est le nom de sa catégorie.'),
       field('Nouveau mot de passe', np, 'Au moins 8 caractères. L’employé sera déconnecté de ses appareils.'), err
     ], [ok, el('button', { type: 'button', class: 'btn', text: 'Retour', onclick: openStaffSheet })]);
     setTimeout(() => nn.focus(), 50);
+  }
+  // bloc « photo de profil » : aperçu rond + changer / retirer (enregistré tout de suite, sans passer par « Enregistrer »)
+  function photoBlock(name, photo, sub, help, onPick, onRemove) {
+    const err = el('p', { class: 'note error', hidden: true });
+    const del = photo ? el('button', {
+      type: 'button', class: 'btn danger', id: 'photoDel', text: 'Retirer', onclick: async () => {
+        err.hidden = true; del.disabled = true;
+        try { await onRemove(); toast('Photo retirée.'); } catch (x) { err.textContent = x.message; err.hidden = false; del.disabled = false; }
+      }
+    }) : null;
+    return el('div', { class: 'profile' }, [
+      avatarEl(name, photo, 'xl'),
+      el('div', { class: 'who' }, [
+        el('b', { text: name }), sub ? el('small', { text: sub }) : null,
+        el('div', { class: 'btns' }, [el('button', { type: 'button', class: 'btn', id: 'photoBtn', html: ICON.image + '<span>' + (photo ? 'Changer la photo' : 'Ajouter une photo') + '</span>', onclick: onPick }), del]),
+        help ? el('small', { class: 'help', text: help }) : null, err
+      ])
+    ]);
+  }
+  function choosePhoto(upload, back, title) {
+    const inp = el('input', { type: 'file', accept: 'image/*' });
+    inp.addEventListener('change', async () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      let bmp; try { bmp = await createImageBitmap(f); } catch (e) { toast('Cette image n’a pas pu être lue.'); return; }
+      cropSheet(bmp, upload, back, title);
+    });
+    inp.click();
+  }
+  // recadrage : on fait glisser la photo dans le cercle et on règle le zoom
+  function cropSheet(bmp, upload, back, title) {
+    const S = 300, OUT = 512, dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cv = el('canvas', { class: 'crop-cv', id: 'cropCanvas', width: S * dpr, height: S * dpr, tabindex: '0', 'aria-label': 'Aperçu : fais glisser pour placer la photo, flèches du clavier pour la déplacer' });
+    const g = cv.getContext('2d');
+    const min = Math.max(S / bmp.width, S / bmp.height);
+    let z = 1, x = 0, y = 0;
+    const sc = () => min * z;
+    const clamp = () => { x = Math.min(0, Math.max(S - bmp.width * sc(), x)); y = Math.min(0, Math.max(S - bmp.height * sc(), y)); };
+    const draw = () => { g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = '#0d1410'; g.fillRect(0, 0, S, S); g.imageSmoothingQuality = 'high'; g.drawImage(bmp, x, y, bmp.width * sc(), bmp.height * sc()); };
+    x = (S - bmp.width * sc()) / 2;
+    y = bmp.height > bmp.width ? -(bmp.height * sc() - S) * 0.25 : (S - bmp.height * sc()) / 2;   // portrait : on vise le haut (le visage)
+    clamp(); draw();
+    const zoom = el('input', { type: 'range', id: 'cropZoom', min: '1', max: '5', step: '0.01', value: '1', 'aria-label': 'Zoom' });
+    const zoomTo = nz => {
+      nz = Math.max(1, Math.min(5, nz));
+      const k = nz / z; x = S / 2 - (S / 2 - x) * k; y = S / 2 - (S / 2 - y) * k; z = nz;
+      clamp(); draw(); zoom.value = String(z);
+    };
+    zoom.addEventListener('input', () => zoomTo(+zoom.value));
+    let drag = null;
+    cv.addEventListener('pointerdown', e => { drag = { px: e.clientX, py: e.clientY, k: S / cv.getBoundingClientRect().width }; cv.setPointerCapture(e.pointerId); cv.classList.add('dragging'); });
+    cv.addEventListener('pointermove', e => { if (!drag) return; x += (e.clientX - drag.px) * drag.k; y += (e.clientY - drag.py) * drag.k; drag.px = e.clientX; drag.py = e.clientY; clamp(); draw(); });
+    const stop = () => { drag = null; cv.classList.remove('dragging'); };
+    cv.addEventListener('pointerup', stop); cv.addEventListener('pointercancel', stop);
+    cv.addEventListener('wheel', e => { e.preventDefault(); zoomTo(z * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+    cv.addEventListener('keydown', e => {
+      const d = { ArrowLeft: [12, 0], ArrowRight: [-12, 0], ArrowUp: [0, 12], ArrowDown: [0, -12] }[e.key];
+      if (d) { x += d[0]; y += d[1]; clamp(); draw(); e.preventDefault(); }
+      if (e.key === '+' || e.key === '=') { zoomTo(z * 1.1); e.preventDefault(); }
+      if (e.key === '-') { zoomTo(z / 1.1); e.preventDefault(); }
+    });
+    const err = el('p', { class: 'note error', hidden: true });
+    const ok = el('button', {
+      type: 'button', class: 'btn primary', id: 'cropOk', text: 'Valider la photo', onclick: async () => {
+        err.hidden = true; ok.disabled = true; ok.textContent = 'Envoi…';
+        try {
+          const out = document.createElement('canvas'); out.width = out.height = OUT;
+          const og = out.getContext('2d'), k = OUT / S; og.imageSmoothingQuality = 'high';
+          og.drawImage(bmp, x * k, y * k, bmp.width * sc() * k, bmp.height * sc() * k);
+          await upload(await toBlob(out, 0.88));
+          toast('Photo de profil enregistrée.');
+        } catch (x2) { err.textContent = x2.message || 'L’envoi a échoué.'; err.hidden = false; ok.disabled = false; ok.textContent = 'Valider la photo'; }
+      }
+    });
+    openSheet(title || 'Photo de profil', [
+      el('p', { class: 'help', text: 'Fais glisser la photo pour la placer dans le cercle et règle le zoom.' }),
+      el('div', { class: 'crop' }, [cv]),
+      el('label', { class: 'crop-zoom' }, [el('span', { text: 'Zoom' }), zoom]),
+      err
+    ], [ok, el('button', { type: 'button', class: 'btn', text: 'Annuler', onclick: back })]);
   }
   // recharge le catalogue depuis le serveur (catégories des décorateurs) sans perdre les modifications en cours
   async function refreshData() {
@@ -814,7 +924,7 @@
       dc ? null : el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
       dc ? null : el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
       el('div', { class: 'row2' }, [field(dc ? 'Prix ($, facultatif)' : 'Prix ($)', price), field('Prix maximum ($)', priceMax)]),
-      el('p', { class: 'help', style: { margin: '-6px 0 0' }, text: dc ? 'Laisse vide si tu ne veux pas afficher de prix. Remplis les deux pour une fourchette.' : 'Un seul prix : laisse « Prix maximum » vide. Une fourchette : remplis les deux (ex. 1 000 et 2 000 → « 1 000 $ – 2 000 $ »). Rien du tout : « Prix sur demande ».' }),
+      el('p', { class: 'help', style: { margin: '-6px 0 0' }, text: dc ? 'Laisse vide si tu ne veux pas afficher de prix. Remplis les deux pour une fourchette.' : 'Un seul prix : laisse « Prix maximum » vide. Une fourchette : remplis les deux (ex. 1 000 et 2 000 → « 1 000 $ – 2 000 $ »). Rien du tout : « Prix sur demande ».' }),
       dc ? null : garageField,
       field('Description', desc),
       field('Points forts', feats, 'Sépare-les par des virgules.'),
@@ -836,7 +946,7 @@
     l.id = uniqueId(slugify(l.name), state.data.listings.filter(x => x !== l).map(x => x.id).concat(saved));
   }
   async function deleteListing(l) {
-    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', (l.deco ? 'La décoration et toutes ses pièces seront retirées' : 'Le bien et toutes ses pièces seront retirés') + ' du site au prochain enregistrement. Un admin pourra ' + (l.deco ? 'la' : 'le') + ' restaurer depuis l’Historique.', 'Supprimer');
+    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', (l.deco ? 'La décoration et toutes ses pièces seront retirées' : 'Le bien et toutes ses pièces seront retirés') + ' du site au prochain enregistrement. Un admin pourra ' + (l.deco ? 'la' : 'le') + ' restaurer depuis l’Historique.', 'Supprimer');
     if (!ok) return;
     mediaOfListing(l).forEach(dropMedia);
     state.data.listings = state.data.listings.filter(x => x !== l);
@@ -1174,7 +1284,7 @@
     const v = visit.viewer, p = visit.point;
     p.yaw = Math.round(wrapYaw(v.view.yaw) * 10) / 10; p.pitch = Math.round(v.view.pitch * 10) / 10;
     markDirty();
-    toast('Vue de départ de « ' + p.name + ' » enregistrée.');
+    toast('Vue de départ de « ' + p.name + ' » enregistrée.');
   }
   async function toolCover() {
     const v = visit.viewer, l = visit.listing;
@@ -1208,7 +1318,7 @@
         el('div', { class: 'acts' }, [canEditLink(l, p, link) ? iconBtn('pencil', 'Modifier', () => openLinkSheet(link)) : null])
       ]);
     }));
-    openSheet('Passages de « ' + p.name + ' »', [
+    openSheet('Passages de « ' + p.name + ' »', [
       el('p', { class: 'note', text: 'Un passage est un cercle au sol : en cliquant dessus, le visiteur va dans une autre pièce. Place-le dans la direction de cette pièce.' }),
       p.links.length ? list : el('p', { class: 'help', text: 'Aucun passage pour l’instant.' })
     ], [el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Placer un passage</span>', onclick: () => { closeSheet(); startTool('link', 'Clique sur le sol là où placer le cercle'); } })]);
@@ -1225,7 +1335,7 @@
         const t = pointOf(l, link.target);
         t.links.push({ id: 'l' + rid(5), target: p.id, yaw: Math.round(wrapYaw(link.yaw - (p.north || 0) + 180 + (t.north || 0)) * 10) / 10, pitch: link.pitch });
         markDirty();
-        toast('Passage retour ajouté dans « ' + t.name + ' ». Vérifie sa position en y allant.', 4500);
+        toast('Passage retour ajouté dans « ' + t.name + ' ». Vérifie sa position en y allant.', 4500);
       }
       closeSheet();
     };
@@ -1246,10 +1356,10 @@
     const val = el('b', { text: (p.north || 0).toFixed(1) + '°' });
     openSheet('Orientation', [
       el('p', { class: 'note', text: 'Pour qu’on garde la même direction en passant d’une pièce à l’autre, choisis un repère commun (par exemple la façade vitrée ou la porte d’entrée), tourne la vue vers lui dans chaque pièce, puis clique sur le bouton.' }),
-      el('p', {}, ['Repère actuel de « ' + p.name + ' » : ', val])
+      el('p', {}, ['Repère actuel de « ' + p.name + ' » : ', val])
     ], [el('button', {
       type: 'button', class: 'btn primary', text: 'Utiliser la direction actuelle', onclick: () => {
-        p.north = Math.round(wrapYaw(visit.viewer.view.yaw) * 10) / 10; val.textContent = p.north.toFixed(1) + '°'; orientBadge(); markDirty(); toast('Repère enregistré pour « ' + p.name + ' ».');
+        p.north = Math.round(wrapYaw(visit.viewer.view.yaw) * 10) / 10; val.textContent = p.north.toFixed(1) + '°'; orientBadge(); markDirty(); toast('Repère enregistré pour « ' + p.name + ' ».');
       }
     })]);
   }
@@ -1276,7 +1386,7 @@
       });
     };
     render();
-    openSheet('Pièces de « ' + l.name + ' »', [canAddRoom(l) ? startPicker(l, render) : null, box], [
+    openSheet('Pièces de « ' + l.name + ' »', [canAddRoom(l) ? startPicker(l, render) : null, box], [
       canAddRoom(l) ? el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }) : null,
       el('button', { type: 'button', class: 'btn', text: l.deco ? 'Infos de la décoration' : 'Infos du bien', onclick: () => openListingSheet(l) })
     ]);
@@ -1284,12 +1394,12 @@
   // pièce dans laquelle le visiteur apparaît en ouvrant la visite (modifiable par l'admin et les gérants)
   function startPicker(l, onChange) {
     const sel = el('select', {
-      id: 'startRoom', onchange: e => { l.start = e.target.value; markDirty(); renderCatalog(); onChange && onChange(); toast('La visite commencera dans « ' + (pointOf(l, l.start) || {}).name + ' ».'); }
+      id: 'startRoom', onchange: e => { l.start = e.target.value; markDirty(); renderCatalog(); onChange && onChange(); toast('La visite commencera dans « ' + (pointOf(l, l.start) || {}).name + ' ».'); }
     }, l.points.map(p => el('option', { value: p.id, text: p.name, selected: (l.start || (l.points[0] && l.points[0].id)) === p.id })));
     return field('Pièce de départ de la visite', sel, 'C’est la pièce dans laquelle on apparaît en ouvrant la visite.');
   }
   async function deletePoint(l, p, rerender) {
-    const ok = await confirmBox('Supprimer « ' + p.name + ' » ?', 'La pièce, ses étiquettes et les passages qui y mènent seront supprimés.', 'Supprimer');
+    const ok = await confirmBox('Supprimer « ' + p.name + ' » ?', 'La pièce, ses étiquettes et les passages qui y mènent seront supprimés.', 'Supprimer');
     if (!ok) return;
     dropMedia(p.image); dropMedia(p.imageSmall);
     l.points = l.points.filter(x => x !== p);
@@ -1306,7 +1416,7 @@
   const wiz = { listing: null, replace: null, files: [], S: null, viewer: null, preview: null, sel: -1, equi: null, adj: {} };
   function openWizard(l, replacePoint) {
     Object.assign(wiz, { listing: l, replace: replacePoint || null, files: [], S: null, sel: -1, equi: null, adj: {} });
-    $('wizTitle').textContent = replacePoint ? 'Nouvelle image pour « ' + replacePoint.name + ' »' : 'Nouvelle pièce · ' + l.name;
+    $('wizTitle').textContent = replacePoint ? 'Nouvelle image pour « ' + replacePoint.name + ' »' : 'Nouvelle pièce · ' + l.name;
     $('wizard').hidden = false;
     wizStepFiles();
   }
@@ -1609,8 +1719,8 @@
             el('button', { type: 'button', class: 'btn primary', text: 'Restaurer', onclick: e => restoreListing(t, e.currentTarget) }),
             el('button', {
               type: 'button', class: 'btn danger', text: 'Supprimer définitivement', onclick: async () => {
-                if (!(await confirmBox('Supprimer définitivement « ' + t.name + ' » ?', 'Le bien, ses pièces et ses images seront effacés pour de bon. Impossible de revenir en arrière.', 'Supprimer définitivement'))) return;
-                try { drawTrash((await api('DELETE', '/api/trash/' + encodeURIComponent(t.id))).items); toast('« ' + t.name + ' » a été supprimé définitivement.'); loadLog(); }
+                if (!(await confirmBox('Supprimer définitivement « ' + t.name + ' » ?', 'Le bien, ses pièces et ses images seront effacés pour de bon. Impossible de revenir en arrière.', 'Supprimer définitivement'))) return;
+                try { drawTrash((await api('DELETE', '/api/trash/' + encodeURIComponent(t.id))).items); toast('« ' + t.name + ' » a été supprimé définitivement.'); loadLog(); }
                 catch (x) { err.textContent = x.message; err.hidden = false; }
               }
             })
@@ -1644,7 +1754,7 @@
         const base = JSON.parse(state.saved);
         if (!base.listings.some(x => x.id === l.id)) { base.listings.push(JSON.parse(JSON.stringify(l))); state.saved = JSON.stringify(base); }
         renderCatalog(); refreshPage(); updateAgentBar();
-        toast('« ' + l.name + ' » est de retour dans le catalogue.', 4500);
+        toast('« ' + l.name + ' » est de retour dans le catalogue.', 4500);
         drawTrash((await api('GET', '/api/trash')).items); loadLog();
       } catch (x) { err.textContent = x.message; err.hidden = false; btn.disabled = false; }
     };
@@ -1782,11 +1892,16 @@
     const onCat = currentPage === 'catalogue';
     fill(m, [link('#/catalogue', 'Tous les biens', count('all'), onCat && state.filter.type === 'all'), el('hr')]
       .concat(TYPES.map(t => link('#/catalogue/' + typeSlug(t), typePlural(t), count(t), onCat && state.filter.type === t))));
-    // menu « Décorateurs » : une entrée par décorateur
+    // menu « Décorateurs » : une entrée par décorateur
     const dm = $('ddDeco'), list = decorators(), onDeco = currentPage === 'decorateurs';
     $('decoNav').hidden = !list.length;
     if (dm) fill(dm, [link('#/decorateurs', 'Tous les décorateurs', 0, onDeco && !decoPage), list.length ? el('hr') : null]
-      .concat(list.map(x => link('#/decorateurs/' + x.id, x.name, state.data.listings.filter(l => l.deco === x.id && l.points.length).length, onDeco && decoPage === x.id))));
+      .concat(list.map(x => {
+        const n = state.data.listings.filter(l => l.deco === x.id && l.points.length).length;
+        return el('a', { href: '#/decorateurs/' + x.id, 'aria-current': onDeco && decoPage === x.id ? 'page' : null }, [
+          el('span', { class: 'dd-who' }, [avatarEl(x.name, x.photo, 'xs'), el('span', { text: x.name })]), n ? el('small', { text: String(n) }) : null
+        ]);
+      })));
     document.querySelectorAll('.mainnav > a, .mainnav .dd-top').forEach(a => {
       if (a.dataset.page === currentPage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
@@ -1943,8 +2058,13 @@
           const items = state.data.listings.filter(l => l.deco === x.id && l.points.length).sort((a, b) => (b.order || 0) - (a.order || 0));
           const cover = items[0] && items[0].cover;
           return el('a', { class: 'decocard', href: '#/decorateurs/' + x.id }, [
-            el('span', { class: 'photo', style: cover ? { backgroundImage: 'url("' + mediaURL(cover) + '")' } : {} }, [cover ? null : el('img', { src: 'logo.png', alt: '' })]),
-            el('span', { class: 'who' }, [el('b', { text: x.name }), el('small', { text: items.length ? items.length + (items.length > 1 ? ' décorations à visiter' : ' décoration à visiter') : 'Bientôt des décorations' })])
+            el('span', { class: 'banner' + (cover ? '' : ' empty'), style: cover ? { backgroundImage: 'url("' + mediaURL(cover) + '")' } : {} }),
+            el('span', { class: 'who' }, [
+              avatarEl(x.name, x.photo, 'deco'),
+              el('b', { text: x.name }),
+              el('small', { text: items.length ? items.length + (items.length > 1 ? ' décorations à visiter' : ' décoration à visiter') : 'Bientôt des décorations' }),
+              el('span', { class: 'go', text: 'Voir ses décorations' })
+            ])
           ]);
         })) : el('p', { class: 'note', text: 'Aucun décorateur pour le moment.' })
       ]);
@@ -1959,9 +2079,12 @@
     items.forEach(l => grid.append(cardOf(l)));
     const n = items.filter(l => l.points.length).length;
     fill(box, [
-      el('div', { class: 'cat-head' }, [el('div', {}, [
-        el('h1', { text: x.name }),
-        el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' })
+      el('div', { class: 'cat-head' }, [el('div', { class: 'deco-id' }, [
+        avatarEl(x.name, x.photo, 'xl'),
+        el('div', {}, [
+          el('h1', { text: x.name }),
+          el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' })
+        ])
       ])]),
       el('div', { style: { height: '26px' } }),
       grid,
@@ -2133,13 +2256,13 @@
     avis() {
       const s = site().reviews;
       openSheet('Avis', [el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 3 }),
-        el('p', { class: 'note', text: 'Pour retirer un avis, utilise le bouton « Supprimer cet avis » sous l’avis concerné.' })],
+        el('p', { class: 'note', text: 'Pour retirer un avis, utilise le bouton « Supprimer cet avis » sous l’avis concerné.' })],
       [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
     },
     decorateurs() {
       const s = site().decor;
       openSheet('Décorateurs', [el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 3 }),
-        el('p', { class: 'note', text: 'Chaque compte « Décorateur » (bouton Comptes) a automatiquement sa catégorie ici.' })],
+        el('p', { class: 'note', text: 'Chaque compte « Décorateur » (bouton Comptes) a automatiquement sa catégorie ici.' })],
       [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
     },
     accueil() {

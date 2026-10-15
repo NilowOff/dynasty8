@@ -1,8 +1,10 @@
 /* API Dynasty 8 : comptes employés (admin, gérant), catalogue et images des pièces.
    Cloudflare Worker avec un espace de stockage KV lié sous le nom « DB ».
-   Clés KV : data (catalogue), staff (comptes), secret (clé de signature des sessions), media/… (images). */
+   Clés KV : data (catalogue), staff (comptes), secret (clé de signature des sessions), media/… (images),
+   media/staff/… (photos de profil des employés). */
 
 const MEDIA_RE = /^media\/[a-z0-9-]{1,60}\/[a-z0-9-]{1,80}\.jpg$/;
+const PHOTO_RE = /^media\/staff\/[a-z0-9-]{1,80}\.jpg$/;
 const STATIC_RE = /^[a-z0-9_-]{1,60}\.(jpg|png)$/i;
 const ID_RE = /^[a-z0-9-]{1,60}$/;
 const USER_RE = /^[a-z0-9._-]{3,24}$/;
@@ -13,6 +15,7 @@ const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro'
 const ITER = 5000;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 const MAX_IMAGE = 20 * 1024 * 1024;
+const MAX_PHOTO = 2 * 1024 * 1024;
 const MAX_DATA = 1024 * 1024;
 const DEFAULT_SEED = 'https://nilowoff.github.io/dynasty8/data.json';
 
@@ -71,6 +74,7 @@ async function route(request, env, ctx) {
   const me = await auth(request, env);
   if (path === '/api/me' && m === 'GET') return json({ user: publicUser(me) });
   if (path === '/api/password' && m === 'POST') return changeOwnPassword(request, env, me);
+  if (path === '/api/me/photo' && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, me.username, m === 'DELETE');
   if (path.startsWith('/api/media/') && m === 'PUT') return putMedia(request, env, me, path.slice('/api/'.length));
   if (path === '/api/save' && m === 'POST') return save(request, env, me);
   if (path.startsWith('/api/reviews/') && m === 'DELETE') {
@@ -88,11 +92,13 @@ async function route(request, env, ctx) {
   }
   if (path === '/api/staff' || path.startsWith('/api/staff/')) {
     if (me.role !== 'admin') deny('Seul un admin peut gérer les comptes.');
-    const name = decodeURIComponent(path.slice('/api/staff/'.length) || '');
+    const rest = path.slice('/api/staff/'.length).split('/');
+    const name = path === '/api/staff' ? '' : decodeURIComponent(rest[0] || '');
     if (path === '/api/staff' && m === 'GET') return listStaff(env);
     if (path === '/api/staff' && m === 'POST') return createStaff(request, env, me);
-    if (name && m === 'PATCH') return updateStaff(request, env, me, name);
-    if (name && m === 'DELETE') return deleteStaff(env, me, name);
+    if (name && rest[1] === 'photo' && rest.length === 2 && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, name, m === 'DELETE');
+    if (name && rest.length === 1 && m === 'PATCH') return updateStaff(request, env, me, name);
+    if (name && rest.length === 1 && m === 'DELETE') return deleteStaff(env, me, name);
   }
   throw new HttpError(404, 'not_found', 'Adresse inconnue.');
 }
@@ -108,6 +114,7 @@ async function serveMedia(env, key) {
 }
 async function putMedia(request, env, me, key) {
   if (!MEDIA_RE.test(key)) bad('Chemin d’image non valable.');
+  if (PHOTO_RE.test(key)) deny('Les photos de profil se changent dans « Mon compte ».');
   const len = +(request.headers.get('Content-Length') || 0);
   if (len > MAX_IMAGE) throw new HttpError(413, 'too_large', 'Image trop lourde (20 Mo maximum).');
   if (!/^image\/jpeg/i.test(request.headers.get('Content-Type') || '')) bad('Seules les images JPEG sont acceptées.');
@@ -161,7 +168,8 @@ async function save(request, env, me) {
   const used = usedMedia(next, trash || []);
   // un décorateur ne peut effacer que les images de ses propres décorations
   const ownMedia = me.role === 'decorateur' ? new Set(cur.listings.filter(l => l.deco === me.uid).flatMap(mediaOfListing)) : null;
-  const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !used.has(p) && (!ownMedia || ownMedia.has(p)));
+  const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !PHOTO_RE.test(p) && !used.has(p) && (!ownMedia || ownMedia.has(p)));
+  toDelete.push(...lostPhotos(cur.decorators, next.decorators, staffNow));
   const changes = describeChanges(cur, next);
 
   next.version = 1;
@@ -359,7 +367,7 @@ function sanitize(d, lenient) {
     });
     if (l.start !== null && !pids.has(l.start)) l.start = l.points[0] ? l.points[0].id : null;
   });
-  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => ({ id: x.id, name: str(x.name, 40) }));
+  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => decoEntry(x.id, str(x.name, 40), x.photo));
   if (d.site !== undefined) d.site = sanitizeSite(d.site);
   if (d.site === undefined) delete d.site;
 }
@@ -453,20 +461,29 @@ function checkDecorateur(cur, next, me) {
   }
 }
 // catégories « Décorateurs » : un compte décorateur = une catégorie ; celle d'un compte supprimé reste tant qu'elle contient des décorations
+const decoEntry = (id, name, photo) => (typeof photo === 'string' && PHOTO_RE.test(photo)) ? { id, name, photo } : { id, name };
 function computeDecorators(staff, data, prev) {
-  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => ({ id: u.uid, name: u.name || u.username }));
+  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo));
   const ids = new Set(list.map(x => x.id));
-  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push({ id: x.id, name: x.name }); ids.add(x.id); } });
+  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo)); ids.add(x.id); } });
   return list.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+// photos de profil qui ne servent plus : ni à un compte, ni à une catégorie de décorateur
+function lostPhotos(before, after, staff) {
+  const keep = new Set(Object.values(staff.users).map(u => u.photo).concat((after || []).map(x => x.photo)).filter(Boolean));
+  return (before || []).map(x => x.photo).filter(p => p && PHOTO_RE.test(p) && !keep.has(p));
 }
 async function syncDecorators(env, staff) {
   const txt = await env.DB.get('data');
-  if (!txt) return;
+  if (!txt) return [];
   const data = JSON.parse(txt);
-  const list = computeDecorators(staff, data, data.decorators);
-  if (eq(list, data.decorators || [])) return;
+  const before = data.decorators || [];
+  const list = computeDecorators(staff, data, before);
+  if (eq(list, before)) return list;
   data.decorators = list; data.rev = (data.rev || 0) + 1; data.updated = new Date().toISOString();
   await env.DB.put('data', JSON.stringify(data, null, 1));
+  await Promise.all(lostPhotos(before, list, staff).map(k => env.DB.delete(k)));
+  return list;
 }
 
 // ------------------------------------------------------------------ avis des clients
@@ -513,7 +530,7 @@ async function getStaff(env) {
   return staff;
 }
 const putStaff = (env, s) => env.DB.put('staff', JSON.stringify(s));
-const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username });
+const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null });
 
 const enc = new TextEncoder();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -629,13 +646,14 @@ async function changeOwnPassword(request, env, me) {
   const staff = await getStaff(env);
   const nu = await makeUser(me.username, body.password, me.role, me.name);
   nu.created = me.created; nu.uid = me.uid; nu.v = (me.v || 1) + 1;
+  if (me.photo) nu.photo = me.photo;
   staff.users[me.username] = nu;
   await putStaff(env, staff);
   return json(await issueSession(env, nu));
 }
 async function listStaff(env) {
   const staff = await getStaff(env);
-  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
+  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
 async function createStaff(request, env, me) {
   const body = await readJson(request);
@@ -681,9 +699,42 @@ async function deleteStaff(env, me, name) {
   if (name === me.username) bad('Tu ne peux pas supprimer ton propre compte.');
   const staff = await getStaff(env);
   if (!staff.users[name]) throw new HttpError(404, 'not_found', 'Compte introuvable.');
+  const photo = staff.users[name].photo;
   delete staff.users[name];
   await putStaff(env, staff);
-  await syncDecorators(env, staff);
+  const decos = await syncDecorators(env, staff);
+  // la photo reste tant que la catégorie du décorateur existe (elle contient encore des décorations)
+  if (photo && !decos.some(x => x.photo === photo)) await env.DB.delete(photo);
   await addLog(env, me.username, ['a supprimé le compte de ' + name]);
   return listStaff(env);
+}
+
+// photo de profil : chacun change la sienne, un admin peut changer celle de n'importe quel compte
+async function setPhoto(request, env, me, name, remove) {
+  if (name !== me.username && me.role !== 'admin') deny('Seul un admin peut changer la photo d’un autre compte.');
+  let buf = null;
+  if (!remove) {
+    if (!/^image\/jpeg/i.test(request.headers.get('Content-Type') || '')) bad('Seules les images JPEG sont acceptées.');
+    if (+(request.headers.get('Content-Length') || 0) > MAX_PHOTO) throw new HttpError(413, 'too_large', 'Photo trop lourde (2 Mo maximum).');
+    buf = await request.arrayBuffer();
+    if (buf.byteLength > MAX_PHOTO) throw new HttpError(413, 'too_large', 'Photo trop lourde (2 Mo maximum).');
+    const b = new Uint8Array(buf, 0, Math.min(2, buf.byteLength));
+    if (buf.byteLength < 4 || b[0] !== 0xff || b[1] !== 0xd8) bad('Ce fichier n’est pas une image JPEG.');
+  }
+  const staff = await getStaff(env);
+  const u = staff.users[name];
+  if (!u) throw new HttpError(404, 'not_found', 'Compte introuvable.');
+  const old = u.photo || null;
+  if (remove) {
+    if (!old) return json({ ok: true, user: publicUser(u) });
+    delete u.photo;
+  } else {
+    u.photo = 'media/staff/' + u.uid + '-' + rid(6) + '.jpg';
+    await env.DB.put(u.photo, buf, { metadata: { by: me.username, at: Date.now() } });
+  }
+  await putStaff(env, staff);
+  const decos = await syncDecorators(env, staff);
+  if (old && !decos.some(x => x.photo === old)) await env.DB.delete(old);
+  if (name !== me.username) await addLog(env, me.username, [(remove ? 'a retiré la photo de profil de ' : 'a changé la photo de profil de ') + name]);
+  return json({ ok: true, user: publicUser(u) });
 }
