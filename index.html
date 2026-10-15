@@ -246,12 +246,12 @@ body.visit-open .hero-pano { animation-play-state: paused; }
 .brandlink { display: block; flex: none; }
 .mainnav { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .mainnav a {
-  position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 10px 11px; border-radius: 10px;
-  font-family: var(--label); font-stretch: var(--narrow); font-weight: 600; font-size: 17px; color: var(--ink-2); text-decoration: none; white-space: nowrap;
+  position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 10px 9px; border-radius: 10px;
+  font-family: var(--label); font-stretch: var(--narrow); font-weight: 600; font-size: 16.5px; color: var(--ink-2); text-decoration: none; white-space: nowrap;
 }
 .mainnav a:hover { color: var(--ink); background: rgba(2, 89, 52, .06); }
 .mainnav a[aria-current="page"] { color: var(--ink); }
-.mainnav a[aria-current="page"]::after { content: ''; position: absolute; left: 11px; right: 11px; bottom: 3px; height: 3px; border-radius: 3px; background: var(--sun); }
+.mainnav a[aria-current="page"]::after { content: ''; position: absolute; left: 9px; right: 9px; bottom: 3px; height: 3px; border-radius: 3px; background: var(--sun); }
 .mainnav .chev { width: 15px; height: 15px; transition: transform .15s; }
 .dd { position: relative; }
 .dd-menu {
@@ -268,8 +268,9 @@ body.visit-open .hero-pano { animation-play-state: paused; }
 .dd-menu a[aria-current="page"] { background: var(--green-soft); }
 .dd-menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
 .top-actions { margin-left: 12px; }
+.top-actions .btn { white-space: nowrap; }
 .navtoggle { display: none; }
-@media (max-width: 1220px) {
+@media (max-width: 1120px) {
   .navtoggle { display: inline-grid; }
   .top-actions { margin-left: auto; }
   .mainnav {
@@ -425,6 +426,55 @@ button.day:hover { border-color: var(--ink-3); }
 .faq .answer { padding: 0 20px 20px 66px; }
 .faq .answer .rich { font-size: 16px; }
 @media (max-width: 640px) { .faq .answer { padding-left: 20px; } .faq summary { font-size: 17px; } }
+
+/* décorateurs */
+.decogrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 22px; }
+.decocard { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; text-decoration: none; color: inherit; }
+.decocard:hover { border-color: var(--ink-3); }
+.decocard .photo { aspect-ratio: 16 / 10; background: var(--paper) center / cover no-repeat; display: grid; place-items: center; }
+.decocard .photo img { width: 44%; height: auto; }
+.decocard .who { padding: 14px 18px 18px; display: grid; gap: 3px; }
+.decocard b { font-family: var(--display); font-stretch: var(--wide); font-weight: 800; font-size: 21px; letter-spacing: -.005em; }
+.decocard small { color: var(--ink-2); font-size: 15px; }
+
+/* avis */
+.avis-layout { display: grid; grid-template-columns: minmax(0, 370px) minmax(0, 1fr); gap: 26px; align-items: start; }
+.avis-side { display: grid; gap: 18px; }
+@media (min-width: 861px) { .avis-side { position: sticky; top: 16px; } }
+@media (max-width: 860px) { .avis-layout { grid-template-columns: 1fr; } }
+.avis-sum { background: var(--green-deep); color: var(--white); border-radius: var(--radius); padding: 22px 22px 20px; display: grid; gap: 8px; }
+.avis-sum .avg { margin: 0; font-family: var(--display); font-stretch: var(--wide); font-weight: 800; font-size: 56px; line-height: 1; font-variant-numeric: tabular-nums; }
+.avis-sum .avg small { font-size: 20px; font-weight: 600; color: var(--white-soft); }
+.avis-sum .count { margin: 0; color: var(--white-soft); font-size: 15px; }
+.dist { display: grid; gap: 6px; margin-top: 8px; }
+.distrow { display: grid; grid-template-columns: 36px 1fr 28px; gap: 10px; align-items: center; font-family: var(--label); font-stretch: var(--narrow); font-weight: 600; font-size: 15px; }
+.distrow .bar { height: 7px; border-radius: 4px; background: rgba(255, 255, 255, .16); overflow: hidden; }
+.distrow .bar i { display: block; height: 100%; background: var(--sun); border-radius: 4px; }
+.distrow .c { text-align: right; color: var(--white-soft); font-variant-numeric: tabular-nums; }
+.avis-form { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: grid; gap: 14px; }
+.avis-form h2 { margin: 0; font-family: var(--display); font-stretch: var(--wide); font-weight: 800; font-size: 20px; }
+.avis-form .btn { justify-self: start; }
+.trap { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+.starpick { display: flex; gap: 2px; }
+.starpick button { width: 42px; height: 42px; padding: 4px; border: 0; background: none; border-radius: 10px; }
+.starpick button:hover { background: var(--paper); }
+.starpick svg { width: 100%; height: 100%; fill: #D5DDD7; }
+.starpick button.on svg { fill: var(--sun); }
+.stars { display: inline-flex; gap: 2px; }
+.star { position: relative; display: inline-block; width: 17px; height: 17px; }
+.stars.big .star { width: 26px; height: 26px; }
+.star svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: #D5DDD7; }
+.avis-sum .star svg:first-child { fill: rgba(255, 255, 255, .2); }
+.star svg:last-child { fill: var(--sun); clip-path: inset(0 calc(100% - var(--f, 0%)) 0 0); }
+.avis-list { display: grid; gap: 14px; }
+.avis { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; display: grid; gap: 10px; }
+.avis header { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.avis .avatar { width: 42px; height: 42px; border-radius: 50%; background: var(--green); color: var(--sun); display: grid; place-items: center; font-family: var(--display); font-stretch: var(--wide); font-weight: 800; font-size: 17px; }
+.avis b { display: block; font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avis time { font-size: 13px; color: var(--ink-3); }
+.avis .txt { margin: 0; white-space: pre-line; color: var(--ink-2); font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.avis .btn { justify-self: start; min-height: 32px; font-size: 14px; }
+@media (max-width: 480px) { .avis header { grid-template-columns: 42px minmax(0, 1fr); } .avis header .stars { grid-column: 2; } }
 
 /* historique (admin) */
 .trashitem { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px 12px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
@@ -688,11 +738,16 @@ button.day:hover { border-color: var(--ink-3); }
         <a href="#/catalogue" data-page="catalogue" class="dd-top">Catalogue <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></a>
         <div class="dd-menu" id="ddMenu"></div>
       </div>
+      <div class="dd" id="decoNav" hidden>
+        <a href="#/decorateurs" data-page="decorateurs" class="dd-top">Décorateurs <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></a>
+        <div class="dd-menu" id="ddDeco"></div>
+      </div>
       <a href="#/informations" data-page="informations">Informations</a>
       <a href="#/equipe" data-page="equipe">Qui sommes-nous ?</a>
       <a href="#/recrutements" data-page="recrutements">Recrutements</a>
       <a href="#/calendrier" data-page="calendrier">Calendrier</a>
       <a href="#/faq" data-page="faq">Réponses FAQ</a>
+      <a href="#/avis" data-page="avis">Avis</a>
     </nav>
     <div class="top-actions">
       <button class="btn" id="agentBtn" type="button" hidden>
@@ -757,6 +812,8 @@ button.day:hover { border-color: var(--ink-3); }
   <div class="page" id="page-recrutements" data-page="recrutements" hidden><div class="wrap" id="pRecruit"></div></div>
   <div class="page" id="page-calendrier" data-page="calendrier" hidden><div class="wrap" id="pCal"></div></div>
   <div class="page" id="page-faq" data-page="faq" hidden><div class="wrap" id="pFaq"></div></div>
+  <div class="page" id="page-decorateurs" data-page="decorateurs" hidden><div class="wrap" id="pDeco"></div></div>
+  <div class="page" id="page-avis" data-page="avis" hidden><div class="wrap" id="pAvis"></div></div>
 </main>
 
 <footer class="site-foot">

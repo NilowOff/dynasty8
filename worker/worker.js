@@ -6,7 +6,9 @@ const MEDIA_RE = /^media\/[a-z0-9-]{1,60}\/[a-z0-9-]{1,80}\.jpg$/;
 const STATIC_RE = /^[a-z0-9_-]{1,60}\.(jpg|png)$/i;
 const ID_RE = /^[a-z0-9-]{1,60}$/;
 const USER_RE = /^[a-z0-9._-]{3,24}$/;
-const ROLES = ['admin', 'gerant'];
+const ROLES = ['admin', 'gerant', 'decorateur'];
+const ROLE_LABEL = { admin: 'Admin', gerant: 'Gérant', decorateur: 'Décorateur' };
+const rid = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => (b % 36).toString(36)).join('');
 const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
 const ITER = 5000;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
@@ -56,6 +58,8 @@ async function route(request, env, ctx) {
     if (!txt) return json({ error: 'empty' }, 404);
     return new Response(txt, { headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' } });
   }
+  if (path === '/api/reviews' && m === 'GET') return json({ items: await getJSON(env, 'reviews', []) });
+  if (path === '/api/reviews' && m === 'POST') return postReview(request, env);
   if (path === '/api/status' && m === 'GET') {
     const staff = await getStaff(env);
     return json({ setup: Object.keys(staff.users).length === 0 });
@@ -69,6 +73,10 @@ async function route(request, env, ctx) {
   if (path === '/api/password' && m === 'POST') return changeOwnPassword(request, env, me);
   if (path.startsWith('/api/media/') && m === 'PUT') return putMedia(request, env, me, path.slice('/api/'.length));
   if (path === '/api/save' && m === 'POST') return save(request, env, me);
+  if (path.startsWith('/api/reviews/') && m === 'DELETE') {
+    if (me.role !== 'admin') deny('Seul un admin peut supprimer un avis.');
+    return deleteReview(env, me, decodeURIComponent(path.slice('/api/reviews/'.length)));
+  }
   if (path === '/api/log' || path === '/api/trash' || path.startsWith('/api/trash/')) {
     if (me.role !== 'admin') deny('Seul un admin peut voir l’historique.');
     if (path === '/api/log' && m === 'GET') return json({ items: await getJSON(env, 'log', []) });
@@ -137,10 +145,13 @@ async function save(request, env, me) {
   let next = merge3(base, mine, cur);
   sanitize(next, false);
   stampAuthors(cur, next, me);
-  if (me.role !== 'admin') checkGerant(cur, next, me);
+  if (me.role === 'gerant') checkGerant(cur, next, me);
+  else if (me.role === 'decorateur') checkDecorateur(cur, next, me);
+  const staffNow = await getStaff(env);
+  next.decorators = computeDecorators(staffNow, next, cur.decorators);
 
   const deletes = Array.isArray(body.deletes) ? body.deletes : [];
-  if (deletes.length && me.role !== 'admin') deny('Un gérant ne peut rien supprimer.');
+  if (deletes.length && me.role === 'gerant') deny('Un gérant ne peut rien supprimer.');
   const now = new Date().toISOString();
   // biens supprimés : gardés dans la corbeille (avec leurs images) pour pouvoir les restaurer
   const removed = cur.listings.filter(l => !next.listings.some(x => x.id === l.id));
@@ -148,7 +159,9 @@ async function save(request, env, me) {
   if (removed.length || deletes.length) trash = await getJSON(env, 'trash', []);
   removed.forEach(l => trash.unshift({ id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), listing: l, deletedAt: now, deletedBy: me.username }));
   const used = usedMedia(next, trash || []);
-  const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !used.has(p));
+  // un décorateur ne peut effacer que les images de ses propres décorations
+  const ownMedia = me.role === 'decorateur' ? new Set(cur.listings.filter(l => l.deco === me.uid).flatMap(mediaOfListing)) : null;
+  const toDelete = deletes.filter(p => typeof p === 'string' && MEDIA_RE.test(p) && !used.has(p) && (!ownMedia || ownMedia.has(p)));
   const changes = describeChanges(cur, next);
 
   next.version = 1;
@@ -202,8 +215,9 @@ function priceTxt(l) {
 function describeChanges(cur, next) {
   const out = [], q = s => '« ' + (s || 'Sans nom') + ' »';
   const curL = new Map(cur.listings.map(l => [l.id, l])), nextL = new Map(next.listings.map(l => [l.id, l]));
-  next.listings.forEach(l => { if (!curL.has(l.id)) out.push('a créé le bien ' + q(l.name) + (l.points.length ? ' (' + l.points.length + (l.points.length > 1 ? ' pièces)' : ' pièce)') : '')); });
-  cur.listings.forEach(l => { if (!nextL.has(l.id)) out.push('a supprimé le bien ' + q(l.name)); });
+  const noun = l => l.deco ? 'la décoration ' : 'le bien ';
+  next.listings.forEach(l => { if (!curL.has(l.id)) out.push('a créé ' + noun(l) + q(l.name) + (l.points.length ? ' (' + l.points.length + (l.points.length > 1 ? ' pièces)' : ' pièce)') : '')); });
+  cur.listings.forEach(l => { if (!nextL.has(l.id)) out.push('a supprimé ' + noun(l) + q(l.name)); });
   next.listings.forEach(l => {
     const c = curL.get(l.id); if (!c) return;
     const cp = new Map(c.points.map(p => [p.id, p])), np = new Map(l.points.map(p => [p.id, p]));
@@ -232,7 +246,7 @@ async function listTrash(env) {
   const trash = await getJSON(env, 'trash', []);
   return json({ items: trash.map(t => ({
     id: t.id, deletedAt: t.deletedAt, deletedBy: t.deletedBy,
-    name: t.listing.name, type: t.listing.type, deal: t.listing.deal, period: t.listing.period,
+    name: t.listing.name, type: t.listing.type, deal: t.listing.deal, period: t.listing.period, deco: t.listing.deco || null,
     price: t.listing.price, priceMax: t.listing.priceMax ?? null, cover: t.listing.cover, rooms: (t.listing.points || []).length
   })) });
 }
@@ -327,6 +341,7 @@ function sanitize(d, lenient) {
     l.description = str(l.description, 4000);
     l.features = Array.isArray(l.features) ? l.features.map(f => str(f, 80)).filter(Boolean).slice(0, 30) : [];
     l.cover = imgPath(l.cover); l.order = isFinite(+l.order) ? +l.order : 0; l.created = str(l.created, 30);
+    if (typeof l.deco === 'string' && /^[a-z0-9]{1,20}$/.test(l.deco)) { /* décoration d'un décorateur */ } else delete l.deco;
     if (l.createdBy !== undefined) l.createdBy = str(l.createdBy, 24);
     const pids = new Set();
     l.points = (Array.isArray(l.points) ? l.points : []).filter(p => {
@@ -344,6 +359,7 @@ function sanitize(d, lenient) {
     });
     if (l.start !== null && !pids.has(l.start)) l.start = l.points[0] ? l.points[0].id : null;
   });
+  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => ({ id: x.id, name: str(x.name, 40) }));
   if (d.site !== undefined) d.site = sanitizeSite(d.site);
   if (d.site === undefined) delete d.site;
 }
@@ -368,6 +384,8 @@ function sanitizeSite(s) {
     },
     recruit: { open: r.open === true, intro: str(r.intro, 2000), closedText: str(r.closedText, 300), openText: str(r.openText, 300) },
     calendar: { intro: str(c.intro, 1000), booked },
+    reviews: { intro: str(ob(s.reviews).intro, 1000) },
+    decor: { intro: str(ob(s.decor).intro, 1000) },
     faq: { intro: str(f.intro, 2000), items: list(f.items, 80, x => ({ id: x.id, q: str(x.q, 300), a: str(x.a, 5000) })) }
   };
 }
@@ -377,8 +395,15 @@ function stampAuthors(cur, next, me) {
   const curL = new Map(cur.listings.map(l => [l.id, l]));
   next.listings.forEach(l => {
     const cl = curL.get(l.id);
-    if (cl) { if (cl.createdBy) l.createdBy = cl.createdBy; else delete l.createdBy; }
-    else l.createdBy = me.username;
+    if (cl) {
+      if (cl.createdBy) l.createdBy = cl.createdBy; else delete l.createdBy;
+      if (cl.deco) l.deco = cl.deco; else delete l.deco;
+    } else {
+      l.createdBy = me.username;
+      if (me.role === 'decorateur') l.deco = me.uid;
+      else if (me.role === 'gerant') delete l.deco;
+      else if (l.deco && !(cur.decorators || []).some(x => x.id === l.deco)) delete l.deco;
+    }
     const curP = new Map((cl ? cl.points : []).map(p => [p.id, p]));
     l.points.forEach(p => {
       const cp = curP.get(p.id);
@@ -395,6 +420,7 @@ function checkGerant(cur, next, me) {
   for (const cl of cur.listings) {
     const nl = nextL.get(cl.id);
     if (!nl) deny('Un gérant ne peut pas supprimer un bien.');
+    if (cl.deco) { if (!eq(cl, nl)) deny('Un gérant ne peut pas modifier les décorations des décorateurs.'); continue; }
     const ownListing = cl.createdBy === me.username;
     const np = new Map(nl.points.map(p => [p.id, p]));
     for (const cp of cl.points) {
@@ -416,14 +442,78 @@ function checkGerant(cur, next, me) {
   }
 }
 
+// règles du décorateur : il crée, modifie et supprime ses propres décorations, et rien d'autre
+function checkDecorateur(cur, next, me) {
+  if (!eq(cur.site === undefined ? null : cur.site, next.site === undefined ? null : next.site)) deny('Seul un admin peut modifier les pages du site.');
+  const nextL = new Map(next.listings.map(l => [l.id, l]));
+  for (const cl of cur.listings) {
+    if (cl.deco === me.uid) continue;
+    const nl = nextL.get(cl.id);
+    if (!nl || !eq(cl, nl)) deny('Un décorateur ne peut modifier que ses propres décorations (« ' + (cl.name || cl.id) + ' »).');
+  }
+}
+// catégories « Décorateurs » : un compte décorateur = une catégorie ; celle d'un compte supprimé reste tant qu'elle contient des décorations
+function computeDecorators(staff, data, prev) {
+  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => ({ id: u.uid, name: u.name || u.username }));
+  const ids = new Set(list.map(x => x.id));
+  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push({ id: x.id, name: x.name }); ids.add(x.id); } });
+  return list.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+async function syncDecorators(env, staff) {
+  const txt = await env.DB.get('data');
+  if (!txt) return;
+  const data = JSON.parse(txt);
+  const list = computeDecorators(staff, data, data.decorators);
+  if (eq(list, data.decorators || [])) return;
+  data.decorators = list; data.rev = (data.rev || 0) + 1; data.updated = new Date().toISOString();
+  await env.DB.put('data', JSON.stringify(data, null, 1));
+}
+
+// ------------------------------------------------------------------ avis des clients
+const reviewHits = new Map();
+async function postReview(request, env) {
+  const body = await readJson(request);
+  const reviews = await getJSON(env, 'reviews', []);
+  if (body.website) return json({ ok: true, items: reviews });   // champ piège rempli par les robots
+  const clean = (v, n) => String(v || '').replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, n);
+  const name = clean(body.name, 60).replace(/\n/g, ' '), text = clean(body.text, 1000), stars = Math.round(+body.stars);
+  if (name.length < 2) bad('Indique ton nom et ton prénom.');
+  if (!(stars >= 1 && stars <= 5)) bad('Choisis une note de 1 à 5 étoiles.');
+  if (text.length < 5) bad('Écris quelques mots sur ton expérience.');
+  const ip = request.headers.get('CF-Connecting-IP') || '', now = Date.now();
+  const recent = (reviewHits.get(ip) || []).filter(t => now - t < 3600 * 1000);
+  if (recent.length >= 3) throw new HttpError(429, 'throttled', 'Tu as déjà publié plusieurs avis récemment. Réessaie plus tard.');
+  const today = new Date(now).toISOString().slice(0, 10);
+  if (reviews.filter(r => String(r.at).slice(0, 10) === today).length >= 100) throw new HttpError(429, 'throttled', 'Trop d’avis aujourd’hui. Réessaie demain.');
+  recent.push(now); reviewHits.set(ip, recent); if (reviewHits.size > 5000) reviewHits.clear();
+  reviews.unshift({ id: 'r' + now.toString(36) + rid(4), name, stars, text, at: new Date(now).toISOString() });
+  const kept = reviews.slice(0, 1000);
+  await env.DB.put('reviews', JSON.stringify(kept));
+  return json({ ok: true, items: kept });
+}
+async function deleteReview(env, me, id) {
+  const reviews = await getJSON(env, 'reviews', []);
+  const r = reviews.find(x => x.id === id);
+  if (!r) throw new HttpError(404, 'not_found', 'Cet avis n’existe plus.');
+  const kept = reviews.filter(x => x.id !== id);
+  await env.DB.put('reviews', JSON.stringify(kept));
+  await addLog(env, me.username, ['a supprimé l’avis de ' + r.name + ' (' + r.stars + ' étoile' + (r.stars > 1 ? 's' : '') + ')']);
+  return json({ ok: true, items: kept });
+}
+
 // ------------------------------------------------------------------ comptes
 async function getStaff(env) {
   const txt = await env.DB.get('staff');
   const s = txt ? JSON.parse(txt) : null;
-  return s && isObj(s.users) ? s : { users: {} };
+  const staff = s && isObj(s.users) ? s : { users: {} };
+  // identifiant public stable de chaque compte (sert aux catégories des décorateurs)
+  let changed = false;
+  Object.values(staff.users).forEach(u => { if (!u.uid) { u.uid = 'u' + rid(9); changed = true; } });
+  if (changed) await putStaff(env, staff);
+  return staff;
 }
 const putStaff = (env, s) => env.DB.put('staff', JSON.stringify(s));
-const publicUser = u => ({ username: u.username, role: u.role });
+const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username });
 
 const enc = new TextEncoder();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -440,11 +530,12 @@ function sameBytes(a, b) {
   let d = 0; for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
   return d === 0;
 }
-async function makeUser(username, password, role) {
+async function makeUser(username, password, role, name) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await hashPassword(password, salt);
-  return { username, role, salt: b64(salt), hash: b64(hash), v: 1, created: new Date().toISOString() };
+  return { username, role, name: name || username, uid: 'u' + rid(9), salt: b64(salt), hash: b64(hash), v: 1, created: new Date().toISOString() };
 }
+const cleanName = (v, fallback) => (String(v || '').replace(/\s+/g, ' ').trim().slice(0, 40) || fallback);
 function checkNewPassword(p) {
   if (typeof p !== 'string' || p.length < 8) bad('Le mot de passe doit faire au moins 8 caractères.');
   if (p.length > 200) bad('Mot de passe trop long.');
@@ -536,15 +627,15 @@ async function changeOwnPassword(request, env, me) {
   if (!sameBytes(h, unb64(me.hash))) throw new HttpError(401, 'login', 'Mot de passe actuel incorrect.');
   checkNewPassword(body.password);
   const staff = await getStaff(env);
-  const nu = await makeUser(me.username, body.password, me.role);
-  nu.created = me.created; nu.v = (me.v || 1) + 1;
+  const nu = await makeUser(me.username, body.password, me.role, me.name);
+  nu.created = me.created; nu.uid = me.uid; nu.v = (me.v || 1) + 1;
   staff.users[me.username] = nu;
   await putStaff(env, staff);
   return json(await issueSession(env, nu));
 }
 async function listStaff(env) {
   const staff = await getStaff(env);
-  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, role: u.role, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
+  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
 async function createStaff(request, env, me) {
   const body = await readJson(request);
@@ -553,9 +644,10 @@ async function createStaff(request, env, me) {
   checkNewPassword(body.password);
   const staff = await getStaff(env);
   if (staff.users[username]) bad('Cet identifiant est déjà pris.');
-  staff.users[username] = await makeUser(username, body.password, body.role);
+  staff.users[username] = await makeUser(username, body.password, body.role, cleanName(body.name, username));
   await putStaff(env, staff);
-  await addLog(env, me.username, ['a créé le compte de ' + username + ' (' + (body.role === 'admin' ? 'Admin' : 'Gérant') + ')']);
+  await syncDecorators(env, staff);
+  await addLog(env, me.username, ['a créé le compte de ' + username + ' (' + ROLE_LABEL[body.role] + ')']);
   return listStaff(env);
 }
 const adminCount = staff => Object.values(staff.users).filter(u => u.role === 'admin').length;
@@ -568,7 +660,11 @@ async function updateStaff(request, env, me, name) {
   if (body.role !== undefined) {
     if (!ROLES.includes(body.role)) bad('Grade inconnu.');
     if (u.role === 'admin' && body.role !== 'admin' && adminCount(staff) <= 1) bad('Il faut garder au moins un admin.');
-    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; logs.push('a changé le grade de ' + name + ' : ' + (body.role === 'admin' ? 'Admin' : 'Gérant')); }
+    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; logs.push('a changé le grade de ' + name + ' : ' + ROLE_LABEL[body.role]); }
+  }
+  if (body.name !== undefined) {
+    const nn = cleanName(body.name, u.username);
+    if (nn !== (u.name || u.username)) { u.name = nn; logs.push('a renommé le compte de ' + name + ' en « ' + nn + ' »'); }
   }
   if (body.password !== undefined) {
     checkNewPassword(body.password);
@@ -577,6 +673,7 @@ async function updateStaff(request, env, me, name) {
     logs.push('a réinitialisé le mot de passe de ' + name);
   }
   await putStaff(env, staff);
+  await syncDecorators(env, staff);
   await addLog(env, me.username, logs);
   return listStaff(env);
 }
@@ -586,6 +683,7 @@ async function deleteStaff(env, me, name) {
   if (!staff.users[name]) throw new HttpError(404, 'not_found', 'Compte introuvable.');
   delete staff.users[name];
   await putStaff(env, staff);
+  await syncDecorators(env, staff);
   await addLog(env, me.username, ['a supprimé le compte de ' + name]);
   return listStaff(env);
 }

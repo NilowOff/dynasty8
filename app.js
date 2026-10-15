@@ -7,7 +7,7 @@
   // serveur de l'agence (comptes employés, catalogue, images des pièces) : adresse dans <meta name="d8-api">
   const API = ((document.querySelector('meta[name="d8-api"]') || {}).content || '').trim().replace(/\/+$/, '');
   const SHARE_BASE = API ? location.origin + location.pathname.replace(/index\.html?$/i, '') : 'https://claude.ai/artifact/7eJ2mP66hxVcGT49Gkc4ww';
-  const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant' };
+  const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant', decorateur: 'Décorateur' };
   const TYPES = ['Maison', 'Appartement', 'Bureaux', 'Entrepôt', 'Motel/Hôtel', 'Location Pro', 'Intérieur vide'];
   const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
   const STATUSES = { disponible: 'Disponible', reserve: 'Réservé', vendu: 'Vendu', loue: 'Loué' };
@@ -113,14 +113,15 @@
     return t ? el('p', { class: 'opt' }, ['Option garage : ', el('b', { text: t })]) : null;
   }
   // « Bureaux en location », « Maison en vente »
-  function kindOf(l) { return (l.type || 'Bien') + ' en ' + (DEALS[l.deal] || 'Vente').toLowerCase(); }
+  function kindOf(l) { return l.deco ? 'Décoration par ' + decoName(l.deco) : (l.type || 'Bien') + ' en ' + (DEALS[l.deal] || 'Vente').toLowerCase(); }
+  const hasPrice = l => isNum(l.price) || isNum(l.priceMax);
 
   // accueil : le panorama du bien à l'affiche défile lentement (une image 360° se raccorde à elle-même)
   let heroImg = null, heroPick = null;
   function renderHero() {
     const d = state.data; if (!d || !$('hero')) return;
-    const open = d.listings.filter(l => l.points.length && (l.status === 'disponible' || l.status === 'reserve'));
-    const pool = open.length ? open : d.listings.filter(l => l.points.length);
+    const open = d.listings.filter(l => !l.deco && l.points.length && (l.status === 'disponible' || l.status === 'reserve'));
+    const pool = open.length ? open : d.listings.filter(l => !l.deco && l.points.length);
     // un bien tiré au hasard à chaque visite du site (il reste le même pendant la navigation)
     let f = pool.find(l => l.id === heroPick);
     if (!f && pool.length) { f = pool[Math.floor(Math.random() * pool.length)]; heroPick = f.id; }
@@ -157,10 +158,19 @@
     return API && path.startsWith('media/') ? API + '/' + path : path;
   }
   // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé
+  // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé ;
+  // le décorateur ne touche qu'aux décorations de sa propre catégorie
   const me = () => state.user ? state.user.username : null;
-  const isAdmin = () => !state.user || state.user.role === 'admin';
-  const canEditListing = l => isAdmin() || (!!l && l.createdBy === me());
-  const canEditPoint = (l, p) => canEditListing(l) || (!!p && p.createdBy === me());
+  const myUid = () => state.user ? state.user.uid : null;
+  const role = () => state.user ? state.user.role : 'admin';
+  const isAdmin = () => role() === 'admin';
+  const isGerant = () => role() === 'gerant';
+  const isDeco = () => role() === 'decorateur';
+  const ownDeco = l => !!l && isDeco() && !!l.deco && l.deco === myUid();
+  const canEditListing = l => isAdmin() || (isGerant() && !!l && !l.deco && l.createdBy === me()) || ownDeco(l);
+  const canEditPoint = (l, p) => canEditListing(l) || (isGerant() && !!l && !l.deco && !!p && p.createdBy === me());
+  const canAddRoom = l => isAdmin() || (isGerant() && !!l && !l.deco) || ownDeco(l);
+  const canDeleteListing = l => isAdmin() || ownDeco(l);
   let savedKeysCache = { src: null, keys: null };
   function savedHas(...ids) {
     if (savedKeysCache.src !== state.saved) {
@@ -175,7 +185,7 @@
     }
     return savedKeysCache.keys.has(ids.join('/'));
   }
-  const canEditLink = (l, p, link) => canEditPoint(l, p) || !savedHas(l.id, p.id, link.id);
+  const canEditLink = (l, p, link) => canEditPoint(l, p) || (canAddRoom(l) && !savedHas(l.id, p.id, link.id));
   function wrapYaw(y) { return ((y % 360) + 540) % 360 - 180; }
   function listing(id) { return state.data.listings.find(l => l.id === id); }
   function pointOf(l, id) { return l.points.find(p => p.id === id); }
@@ -364,7 +374,7 @@
       state.uploaded.add(path);
     }
     $('agentState').textContent = 'Enregistrement…';
-    const r = await api('POST', '/api/save', { base: JSON.parse(state.saved), data: state.data, deletes: isAdmin() ? [...state.removed] : [] });
+    const r = await api('POST', '/api/save', { base: JSON.parse(state.saved), data: state.data, deletes: (isAdmin() || isDeco()) ? [...state.removed] : [] });
     adoptServerData(r.data);
   }
   // le serveur renvoie le catalogue fusionné (avec les changements des autres employés)
@@ -459,7 +469,10 @@
         const s = await api('POST', setupMode ? '/api/setup' : '/api/login', { username: user.value.trim(), password: pass.value });
         useSession(s);
         closeSheet(); setAgent(true); offerDraft();
-        if (currentPage !== 'catalogue' && !visit.listing) location.hash = '#/catalogue';
+        if (!visit.listing) {
+          if (s.user.role === 'decorateur') location.hash = '#/decorateurs/' + s.user.uid;
+          else if (currentPage !== 'catalogue') location.hash = '#/catalogue';
+        }
         toast('Connecté : ' + s.user.username + ' (' + ROLE_NAMES[s.user.role] + ').');
       } catch (e) { err.textContent = e.message; err.hidden = false; }
       btn.disabled = false;
@@ -477,6 +490,11 @@
     setTimeout(() => user.focus(), 50);
   }
 
+  const ROLE_HELP = {
+    admin: 'Admin : tu peux tout faire, y compris gérer les comptes des employés et les pages du site.',
+    gerant: 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés ; tu ne peux rien supprimer.',
+    decorateur: 'Décorateur : tu as ta propre catégorie dans « Décorateurs ». Tu y crées, modifies et supprimes tes décorations, et tu ne touches pas au reste du site.'
+  };
   function openAccountSheet() {
     const u = state.user; if (!u) return;
     const cur = el('input', { id: 'pwCurrent', type: 'password', autocomplete: 'current-password' });
@@ -499,7 +517,7 @@
     inputEnter([cur, nw, nw2], submit);
     openSheet('Mon compte', [
       el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: ROLE_NAMES[u.role] })])]),
-      el('p', { class: 'help', text: u.role === 'admin' ? 'Admin : tu peux tout faire, y compris gérer les comptes des employés.' : 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés ; tu ne peux rien supprimer.' }),
+      el('p', { class: 'help', text: ROLE_HELP[u.role] || '' }),
       el('h4', { class: 'subhead', text: 'Changer mon mot de passe' }),
       field('Mot de passe actuel', cur), field('Nouveau mot de passe', nw, 'Au moins 8 caractères.'), field('Confirme le nouveau', nw2), msg
     ], [change, el('button', { type: 'button', class: 'btn danger', id: 'logoutBtn', text: 'Se déconnecter', onclick: logout })]);
@@ -515,17 +533,17 @@
         const role = el('select', {
           'aria-label': 'Grade de ' + u.username, onchange: async e => {
             err.hidden = true;
-            try { render((await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { role: e.target.value })).users); toast('Grade de ' + u.username + ' : ' + ROLE_NAMES[e.target.value] + '.'); }
+            try { render((await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { role: e.target.value })).users); toast('Grade de ' + u.username + ' : ' + ROLE_NAMES[e.target.value] + '.'); refreshData(); }
             catch (x) { showErr(x); e.target.value = u.role; }
           }
         }, Object.entries(ROLE_NAMES).map(([v, t]) => el('option', { value: v, text: t, selected: u.role === v })));
         const self = u.username === me();
         box.append(el('div', { class: 'staffitem' }, [
-          el('span', { class: 'avatar', text: u.username.slice(0, 1).toUpperCase() }),
-          el('div', {}, [el('b', { text: u.username + (self ? ' (toi)' : '') }), el('small', { text: 'Créé le ' + (u.created ? new Date(u.created).toLocaleDateString('fr-FR') : '?') })]),
+          el('span', { class: 'avatar', text: (u.name || u.username).slice(0, 1).toUpperCase() }),
+          el('div', {}, [el('b', { text: (u.name || u.username) + (self ? ' (toi)' : '') }), el('small', { text: 'Identifiant : ' + u.username })]),
           role,
           el('div', { class: 'acts' }, [
-            iconBtn('key', 'Nouveau mot de passe pour ' + u.username, () => openResetSheet(u)),
+            iconBtn('pencil', 'Modifier le compte de ' + u.username, () => openResetSheet(u)),
             self ? null : iconBtn('trash', 'Supprimer le compte de ' + u.username, async () => {
               if (!(await confirmBox('Supprimer le compte « ' + u.username + ' » ?', 'Cette personne ne pourra plus se connecter. Les biens et pièces qu’elle a créés restent dans le catalogue.', 'Supprimer'))) return;
               try { render((await api('DELETE', '/api/staff/' + encodeURIComponent(u.username))).users); toast('Compte supprimé.'); } catch (x) { showErr(x); }
@@ -536,44 +554,61 @@
     };
     const nu = el('input', { id: 'staffUser', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'ex. jean.dupont' });
     const np = el('input', { id: 'staffPass', type: 'text', autocomplete: 'off', spellcheck: 'false' });
-    const nr = el('select', { id: 'staffRole' }, [el('option', { value: 'gerant', text: 'Gérant' }), el('option', { value: 'admin', text: 'Admin' })]);
+    const nn = el('input', { id: 'staffName', autocomplete: 'off', placeholder: 'ex. Jean Dupont', maxlength: 40 });
+    const nr = el('select', { id: 'staffRole' }, [el('option', { value: 'gerant', text: 'Gérant' }), el('option', { value: 'decorateur', text: 'Décorateur' }), el('option', { value: 'admin', text: 'Admin' })]);
     const add = el('button', { type: 'button', class: 'btn primary', id: 'staffAdd', html: ICON.plus + '<span>Créer le compte</span>' });
     const create = async () => {
       err.hidden = true; add.disabled = true;
       try {
-        render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value })).users);
-        toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.', 5000);
-        nu.value = ''; np.value = '';
+        render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value, name: nn.value.trim() })).users);
+        toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.' + (nr.value === 'decorateur' ? ' Sa catégorie apparaît dans « Décorateurs ».' : ''), 6000);
+        if (nr.value === 'decorateur') refreshData();
+        nu.value = ''; np.value = ''; nn.value = '';
       } catch (x) { showErr(x); }
       add.disabled = false;
     };
     add.addEventListener('click', create);
-    inputEnter([nu, np], create);
+    inputEnter([nu, np, nn], create);
     openSheet('Comptes des employés', [
-      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer.' }),
+      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer. Décorateur : a sa propre catégorie dans « Décorateurs » et n’y gère que ses décorations.' }),
       box, err,
       el('h4', { class: 'subhead', text: 'Nouveau compte' }),
-      field('Identifiant', nu), field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
+      field('Identifiant', nu, 'Sert à se connecter.'), field('Nom affiché', nn, 'Ex. Jean Dupont. C’est le nom de la catégorie d’un décorateur.'),
+      field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
     ], [add]);
     box.append(el('p', { class: 'help', text: 'Chargement…' }));
     try { render((await api('GET', '/api/staff')).users); } catch (x) { box.innerHTML = ''; showErr(x); }
   }
   function openResetSheet(u) {
-    const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false' });
+    const nn = el('input', { id: 'editName', value: u.name || u.username, maxlength: 40 });
+    const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Laisse vide pour ne pas le changer' });
     const err = el('p', { class: 'note error', hidden: true });
     const ok = el('button', {
-      type: 'button', class: 'btn primary', text: 'Valider', onclick: async () => {
+      type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: async () => {
         err.hidden = true; ok.disabled = true;
-        try { await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { password: np.value }); toast('Nouveau mot de passe enregistré pour ' + u.username + '.'); openStaffSheet(); }
+        const body = { name: nn.value.trim() };
+        if (np.value) body.password = np.value;
+        try { await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), body); toast('Compte de ' + u.username + ' mis à jour.'); refreshData(); openStaffSheet(); }
         catch (x) { err.textContent = x.message; err.hidden = false; }
         ok.disabled = false;
       }
     });
-    openSheet('Mot de passe de ' + u.username, [
-      el('p', { class: 'help', text: 'Choisis un nouveau mot de passe et donne-le à l’employé. Il sera déconnecté de ses appareils.' }),
-      field('Nouveau mot de passe', np, 'Au moins 8 caractères.'), err
+    openSheet('Compte de ' + u.username, [
+      field('Nom affiché', nn, 'Pour un décorateur, c’est le nom de sa catégorie.'),
+      field('Nouveau mot de passe', np, 'Au moins 8 caractères. L’employé sera déconnecté de ses appareils.'), err
     ], [ok, el('button', { type: 'button', class: 'btn', text: 'Retour', onclick: openStaffSheet })]);
-    setTimeout(() => np.focus(), 50);
+    setTimeout(() => nn.focus(), 50);
+  }
+  // recharge le catalogue depuis le serveur (catégories des décorateurs) sans perdre les modifications en cours
+  async function refreshData() {
+    if (!API) return;
+    try {
+      const d = await api('GET', '/api/data');
+      if (!d || !Array.isArray(d.decorators)) return;
+      state.data.decorators = d.decorators;
+      const base = JSON.parse(state.saved); base.decorators = d.decorators; state.saved = JSON.stringify(base);
+      updateAgentBar(); renderCatalog(); refreshPage();
+    } catch (e) { /* pas grave : visible au prochain chargement */ }
   }
 
   // ------------------------------------------------------------------ mode employé
@@ -639,7 +674,7 @@
   function renderCatalog() {
     const d = state.data; if (!d) return;
     const f = state.filter;
-    const types = TYPES.filter(t => d.listings.some(l => l.type === t && (state.agent || l.points.length)) || f.type === t);
+    const types = TYPES.filter(t => d.listings.some(l => !l.deco && l.type === t && (state.agent || l.points.length)) || f.type === t);
     const fl = $('filters'); fl.innerHTML = '';
     const chip = (label, val) => el('button', { type: 'button', class: 'chip', 'aria-pressed': String(f.type === val), text: label, onclick: () => { location.hash = val === 'all' ? '#/catalogue' : '#/catalogue/' + typeSlug(val); } });
     fl.append(chip('Tous', 'all'));
@@ -653,22 +688,22 @@
     const q = el('input', { id: 'fSearch', type: 'search', placeholder: 'Rechercher un bien…', value: f.q, 'aria-label': 'Rechercher', oninput: e => { f.q = e.target.value; renderGrid(); } });
     fl.append(deal, sort, q);
     renderGrid();
-    const n = d.listings.filter(l => l.status === 'disponible').length;
+    const n = d.listings.filter(l => !l.deco && l.status === 'disponible').length;
     $('catSub').textContent = n === 0 ? 'Aucun bien disponible pour le moment' : n === 1 ? '1 bien disponible à Los Santos' : n + ' biens disponibles à Los Santos';
     renderNav(); renderHomeLatest(); renderHero();
   }
   function renderGrid() {
     const d = state.data, f = state.filter, grid = $('grid');
     grid.innerHTML = '';
-    let items = d.listings.filter(l =>
+    let items = d.listings.filter(l => !l.deco &&
       (f.type === 'all' || l.type === f.type) && (f.deal === 'all' || l.deal === f.deal) &&
       (!f.q || (l.name + ' ' + (l.type || '')).toLowerCase().includes(f.q.toLowerCase())) &&
       (state.agent || l.points.length > 0));
     const pv = l => isNum(l.price) ? +l.price : isNum(l.priceMax) ? +l.priceMax : null;
     if (f.sort === 'recent') items.sort((a, b) => (b.order || 0) - (a.order || 0));
     else items.sort((a, b) => { const x = pv(a), y = pv(b); if (x === null) return 1; if (y === null) return -1; return f.sort === 'asc' ? x - y : y - x; });
-    if (state.agent) {
-      grid.append(el('button', { type: 'button', class: 'card new', onclick: newListing }, [
+    if (state.agent && (isAdmin() || isGerant())) {
+      grid.append(el('button', { type: 'button', class: 'card new', onclick: () => newListing() }, [
         el('div', {}, [el('div', { class: 'plus', html: ICON.plus }), el('span', { text: 'Nouveau bien' })])]));
     }
     items.forEach(l => grid.append(cardOf(l)));
@@ -677,14 +712,14 @@
   }
   function cardOf(l) {
     const photo = el('div', { class: 'photo', style: l.cover ? { backgroundImage: 'url("' + mediaURL(l.cover) + '")' } : {} }, [
-      el('span', { class: 'status ' + l.status, text: STATUSES[l.status] || 'Disponible' }),
+      l.deco ? null : el('span', { class: 'status ' + l.status, text: STATUSES[l.status] || 'Disponible' }),
       l.points.length ? el('span', { class: 'sunbadge' }, ['360°', el('small', { text: l.points.length + (l.points.length > 1 ? ' pièces' : ' pièce') })]) : null
     ]);
     const body = el('div', { class: 'body' }, [
       el('p', { class: 'eyebrow', text: kindOf(l) }),
       el('h3', { text: l.name || 'Sans nom' }),
-      priceEl(l),
-      optionEl(l)
+      l.deco && !hasPrice(l) ? null : priceEl(l),
+      l.deco ? null : optionEl(l)
     ]);
     const link = el('a', { href: '#' + l.id, class: 'cardlink', style: { display: 'flex', flexDirection: 'column', color: 'inherit', textDecoration: 'none' } }, [photo, body]);
     if (!l.points.length) {
@@ -696,22 +731,23 @@
     if (state.agent) {
       card.append(el('div', { class: 'agent-actions' }, [
         el('button', { type: 'button', class: 'btn', html: (canEditListing(l) ? ICON.pencil + '<span>Modifier</span>' : ICON.eye + '<span>Infos</span>'), onclick: () => openListingSheet(l) }),
-        l.points.length ? el('button', { type: 'button', class: 'btn', html: ICON.plus + '<span>Pièce</span>', onclick: () => openWizard(l) }) : null
+        l.points.length && canAddRoom(l) ? el('button', { type: 'button', class: 'btn', html: ICON.plus + '<span>Pièce</span>', onclick: () => openWizard(l) }) : null
       ]));
     }
     return card;
   }
-  function newListing() {
+  function newListing(decoId) {
     const d = state.data;
-    const name = 'Nouveau bien';
+    const name = decoId ? 'Nouvelle décoration' : 'Nouveau bien';
     const l = {
-      id: uniqueId(slugify(name), d.listings.map(x => x.id)), name, type: 'Appartement', deal: 'vente', price: null, period: 'semaine',
+      id: uniqueId(slugify(name), d.listings.map(x => x.id)), name, type: decoId ? 'Décoration' : 'Appartement', deal: 'vente', price: null, period: 'semaine',
       status: 'disponible', garagePrice: null, description: '', features: [],
       cover: null, start: null, order: Math.max(0, ...d.listings.map(x => x.order || 0)) + 1, created: new Date().toISOString().slice(0, 10), points: []
     };
     if (me()) l.createdBy = me();
+    if (decoId) l.deco = decoId;
     d.listings.push(l);
-    markDirty(); renderCatalog();
+    markDirty(); renderCatalog(); refreshPage();
     openListingSheet(l, true);
   }
 
@@ -766,26 +802,28 @@
       ])));
     };
     renderRooms();
-    const ro = !canEditListing(l);
+    const ro = !canEditListing(l), dc = !!l.deco, what = dc ? 'la décoration' : 'le bien';
     const priceMax = el('input', { id: 'lPriceMax', type: 'number', min: '0', step: '1000', inputmode: 'numeric', value: l.priceMax ?? '', placeholder: 'Facultatif', oninput: e => upd('priceMax', num(e.target.value)) });
     if (ro) [name, type, period, deal, price, priceMax, status, garage, desc, feats].forEach(i => { i.disabled = true; });
-    openSheet(isNew ? 'Nouveau bien' : ro ? l.name : 'Modifier le bien', [
+    openSheet(isNew ? (dc ? 'Nouvelle décoration' : 'Nouveau bien') : ro ? l.name : (dc ? 'Modifier la décoration' : 'Modifier le bien'), [
       isNew ? el('p', { class: 'note', text: 'Remplis les infos, puis ajoute les pièces avec tes screens. Pense à enregistrer à la fin.' }) : null,
-      ro ? el('p', { class: 'note', text: 'Ce bien a été créé par ' + (l.createdBy || 'un admin') + ' : tu peux y ajouter des pièces et choisir la pièce de départ, mais pas modifier ses infos ni son prix.' }) : null,
-      field('Nom du bien', name),
-      el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
-      el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
-      el('div', { class: 'row2' }, [field('Prix ($)', price), field('Prix maximum ($)', priceMax)]),
-      el('p', { class: 'help', style: { margin: '-6px 0 0' }, text: 'Un seul prix : laisse « Prix maximum » vide. Une fourchette : remplis les deux (ex. 1 000 et 2 000 → « 1 000 $ – 2 000 $ »). Rien du tout : « Prix sur demande ».' }),
-      garageField,
+      ro && dc ? el('p', { class: 'note', text: 'Cette décoration appartient à ' + decoName(l.deco) + '.' }) : null,
+      ro && !dc ? el('p', { class: 'note', text: canAddRoom(l) ? 'Ce bien a été créé par ' + (l.createdBy || 'un admin') + ' : tu peux y ajouter des pièces et choisir la pièce de départ, mais pas modifier ses infos ni son prix.' : 'Tu ne peux pas modifier ce bien.' }) : null,
+      dc ? el('p', { class: 'help', text: 'Catégorie : ' + decoName(l.deco) }) : null,
+      field(dc ? 'Nom de la décoration' : 'Nom du bien', name),
+      dc ? null : el('div', { class: 'row2' }, [field('Type', type), field('Statut', status)]),
+      dc ? null : el('div', { class: 'row2' }, [field('Transaction', deal), periodField]),
+      el('div', { class: 'row2' }, [field(dc ? 'Prix ($, facultatif)' : 'Prix ($)', price), field('Prix maximum ($)', priceMax)]),
+      el('p', { class: 'help', style: { margin: '-6px 0 0' }, text: dc ? 'Laisse vide si tu ne veux pas afficher de prix. Remplis les deux pour une fourchette.' : 'Un seul prix : laisse « Prix maximum » vide. Une fourchette : remplis les deux (ex. 1 000 et 2 000 → « 1 000 $ – 2 000 $ »). Rien du tout : « Prix sur demande ».' }),
+      dc ? null : garageField,
       field('Description', desc),
       field('Points forts', feats, 'Sépare-les par des virgules.'),
-      l.points.length > 1 ? startPicker(l, renderRooms) : null,
+      l.points.length > 1 && canAddRoom(l) ? startPicker(l, renderRooms) : null,
       el('div', { class: 'field' }, [el('span', { text: 'Pièces de la visite' }), roomsBox])
     ], [
-      el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }),
+      canAddRoom(l) ? el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }) : null,
       l.points.length ? el('button', { type: 'button', class: 'btn', text: 'Ouvrir la visite', onclick: () => { closeSheet(); go(l); } }) : null,
-      isAdmin() ? el('button', { type: 'button', class: 'btn danger', text: 'Supprimer le bien', onclick: () => deleteListing(l) }) : null
+      canDeleteListing(l) ? el('button', { type: 'button', class: 'btn danger', text: dc ? 'Supprimer la décoration' : 'Supprimer le bien', onclick: () => deleteListing(l) }) : null
     ]);
     if (isNew) setTimeout(() => { name.focus(); name.select(); }, 50);
   }
@@ -798,13 +836,13 @@
     l.id = uniqueId(slugify(l.name), state.data.listings.filter(x => x !== l).map(x => x.id).concat(saved));
   }
   async function deleteListing(l) {
-    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', 'Le bien et toutes ses pièces seront retirés du catalogue au prochain enregistrement. Un admin pourra le restaurer depuis l’Historique.', 'Supprimer');
+    const ok = await confirmBox('Supprimer « ' + l.name + ' » ?', (l.deco ? 'La décoration et toutes ses pièces seront retirées' : 'Le bien et toutes ses pièces seront retirés') + ' du site au prochain enregistrement. Un admin pourra ' + (l.deco ? 'la' : 'le') + ' restaurer depuis l’Historique.', 'Supprimer');
     if (!ok) return;
     mediaOfListing(l).forEach(dropMedia);
     state.data.listings = state.data.listings.filter(x => x !== l);
     closeSheet();
     if (visit.listing === l) leaveVisit();
-    markDirty(); renderCatalog();
+    markDirty(); renderCatalog(); refreshPage();
   }
 
   // ------------------------------------------------------------------ visite
@@ -892,9 +930,10 @@
     $('vEyebrow').textContent = kindOf(l);
     $('vName').textContent = l.name;
     const pr = priceParts(l), pe = $('vPrice');
+    pe.hidden = !!l.deco && !hasPrice(l);
     pe.className = 'price' + (pr.ask ? ' ask' : '') + (pr.range ? ' range' : ''); pe.innerHTML = '';
     pe.append(pr.text); if (pr.per) pe.append(el('small', { text: pr.per }));
-    const ot = optionText(l), vo = $('vOption');
+    const ot = l.deco ? null : optionText(l), vo = $('vOption');
     vo.hidden = !ot; vo.innerHTML = '';
     if (ot) vo.append('Option garage : ', el('b', { text: ot }));
     if (visit.point) {
@@ -913,7 +952,7 @@
   function refreshTools() {
     const l = visit.listing, p = visit.point; if (!l || !p) return;
     const ep = canEditPoint(l, p), elist = canEditListing(l) || !l.cover;
-    const show = { start: ep, pin: ep, link: true, north: ep, cover: elist, rooms: true };
+    const show = { start: ep, pin: ep, link: canAddRoom(l) || ep, north: ep, cover: elist && (canEditListing(l) || canAddRoom(l)), rooms: canAddRoom(l) || canEditListing(l) };
     document.querySelectorAll('#vtools button[data-tool]').forEach(b => { b.hidden = !show[b.dataset.tool]; });
   }
 
@@ -1047,7 +1086,8 @@
     const l = visit.listing; if (!l) return;
     const kv = [];
     const add = (k, v) => { if (v !== null && v !== undefined && v !== '') kv.push(el('div', {}, [el('dt', { text: k }), el('dd', { text: v })])); };
-    add('Type', l.type); add('Transaction', DEALS[l.deal]); add('Statut', STATUSES[l.status]);
+    if (l.deco) add('Décorateur', decoName(l.deco));
+    else { add('Type', l.type); add('Transaction', DEALS[l.deal]); add('Statut', STATUSES[l.status]); }
     const share = SHARE_BASE + '#' + l.id;
     const shareInput = el('input', { id: 'shareLink', value: share, readonly: true, onfocus: e => e.target.select() });
     const rooms = el('div', { class: 'roomlist' }, l.points.map(p => el('button', {
@@ -1227,18 +1267,18 @@
           el('div', {}, [name, el('small', { text: (l.start === p.id ? 'Départ de la visite' : '') })]),
           el('div', { class: 'acts' }, [
             iconBtn('eye', 'Aller dans cette pièce', () => jumpTo(p)),
-            iconBtn(l.start === p.id ? 'starFill' : 'star', 'Commencer la visite ici', () => { l.start = p.id; markDirty(); render(); }),
+            canAddRoom(l) ? iconBtn(l.start === p.id ? 'starFill' : 'star', 'Commencer la visite ici', () => { l.start = p.id; markDirty(); render(); }) : null,
             el_ ? iconBtn('up', 'Monter', () => { if (i > 0) { l.points.splice(i, 1); l.points.splice(i - 1, 0, p); markDirty(); render(); setVisitTexts(); } }) : null,
             ep ? iconBtn('image', 'Remplacer l’image 360°', () => { closeSheet(); openWizard(l, p); }) : null,
-            isAdmin() ? iconBtn('trash', 'Supprimer la pièce', () => deletePoint(l, p, render)) : null
+            canDeleteListing(l) ? iconBtn('trash', 'Supprimer la pièce', () => deletePoint(l, p, render)) : null
           ])
         ]));
       });
     };
     render();
-    openSheet('Pièces de « ' + l.name + ' »', [startPicker(l, render), box], [
-      el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }),
-      el('button', { type: 'button', class: 'btn', text: 'Infos du bien', onclick: () => openListingSheet(l) })
+    openSheet('Pièces de « ' + l.name + ' »', [canAddRoom(l) ? startPicker(l, render) : null, box], [
+      canAddRoom(l) ? el('button', { type: 'button', class: 'btn primary', html: ICON.plus + '<span>Ajouter une pièce</span>', onclick: () => { closeSheet(); openWizard(l); } }) : null,
+      el('button', { type: 'button', class: 'btn', text: l.deco ? 'Infos de la décoration' : 'Infos du bien', onclick: () => openListingSheet(l) })
     ]);
   }
   // pièce dans laquelle le visiteur apparaît en ouvrant la visite (modifiable par l'admin et les gérants)
@@ -1625,7 +1665,7 @@
   const typePlural = t => (TYPE_INFO[t] || {}).plural || t;
   const typeSlug = t => (TYPE_INFO[t] || {}).slug || slugify(t);
   const typeFromSlug = s => TYPES.find(t => typeSlug(t) === s) || null;
-  const PAGE_TITLES = { accueil: 'Accueil', catalogue: 'Catalogue', informations: 'Informations', equipe: 'Qui sommes-nous ?', recrutements: 'Recrutements', calendrier: 'Calendrier', faq: 'Réponses FAQ' };
+  const PAGE_TITLES = { accueil: 'Accueil', catalogue: 'Catalogue', decorateurs: 'Décorateurs', informations: 'Informations', equipe: 'Qui sommes-nous ?', recrutements: 'Recrutements', calendrier: 'Calendrier', faq: 'Réponses FAQ', avis: 'Avis' };
 
   const SITE_DEFAULT = {
     home: {
@@ -1662,6 +1702,12 @@
     calendar: {
       intro: 'Consultez les disponibilités du **Rooftop D8** et contactez-nous pour effectuer une demande de réservation.',
       booked: {}
+    },
+    reviews: {
+      intro: 'Vous avez fait appel au **Dynasty 8** ? Partagez votre expérience : votre avis aide les futurs clients et toute l’équipe.'
+    },
+    decor: {
+      intro: 'Découvrez les réalisations des décorateurs du **Dynasty 8**. Chaque décoration se visite en 360°, pièce par pièce.'
     },
     faq: {
       intro: 'Retrouvez ici toutes les réponses aux questions posées sur la FAQ du **Dynasty 8**, afin de vous renseigner rapidement sur nos services, nos démarches ou autres questions.',
@@ -1710,7 +1756,7 @@
     currentPage = name;
     document.querySelectorAll('#pages > .page').forEach(p => { p.hidden = p.dataset.page !== name; });
     renderNav();
-    document.title = name === 'accueil' ? 'Dynasty 8 | Agence immobilière de Los Santos' : (name === 'catalogue' && state.filter.type !== 'all' ? typePlural(state.filter.type) : PAGE_TITLES[name]) + ' | Dynasty 8';
+    document.title = name === 'accueil' ? 'Dynasty 8 | Agence immobilière de Los Santos' : (name === 'catalogue' && state.filter.type !== 'all' ? typePlural(state.filter.type) : name === 'decorateurs' && decoPage ? decoName(decoPage) : PAGE_TITLES[name]) + ' | Dynasty 8';
     renderPage(name);
     $('mainnav').classList.remove('open'); $('navToggle').setAttribute('aria-expanded', 'false');
     if (changed) window.scrollTo(0, 0);
@@ -1724,16 +1770,23 @@
     else if (name === 'recrutements') renderRecruit();
     else if (name === 'calendrier') renderCal();
     else if (name === 'faq') renderFaq();
+    else if (name === 'decorateurs') renderDeco();
+    else if (name === 'avis') renderAvis();
   }
   const refreshPage = () => renderPage(currentPage);
 
   function renderNav() {
     const m = $('ddMenu'); if (!m || !state.data) return;
-    const count = t => state.data.listings.filter(l => l.points.length && (t === 'all' || l.type === t)).length;
+    const count = t => state.data.listings.filter(l => !l.deco && l.points.length && (t === 'all' || l.type === t)).length;
     const link = (href, label, n, cur) => el('a', { href, 'aria-current': cur ? 'page' : null }, [label, n ? el('small', { text: String(n) }) : null]);
     const onCat = currentPage === 'catalogue';
     fill(m, [link('#/catalogue', 'Tous les biens', count('all'), onCat && state.filter.type === 'all'), el('hr')]
       .concat(TYPES.map(t => link('#/catalogue/' + typeSlug(t), typePlural(t), count(t), onCat && state.filter.type === t))));
+    // menu « Décorateurs » : une entrée par décorateur
+    const dm = $('ddDeco'), list = decorators(), onDeco = currentPage === 'decorateurs';
+    $('decoNav').hidden = !list.length;
+    if (dm) fill(dm, [link('#/decorateurs', 'Tous les décorateurs', 0, onDeco && !decoPage), list.length ? el('hr') : null]
+      .concat(list.map(x => link('#/decorateurs/' + x.id, x.name, state.data.listings.filter(l => l.deco === x.id && l.points.length).length, onDeco && decoPage === x.id))));
     document.querySelectorAll('.mainnav > a, .mainnav .dd-top').forEach(a => {
       if (a.dataset.page === currentPage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
@@ -1758,7 +1811,7 @@
   }
   function renderHomeLatest() {
     const g = $('homeGrid'); if (!g || !state.data) return;
-    const items = state.data.listings.filter(l => l.points.length).sort((a, b) => (b.order || 0) - (a.order || 0)).slice(0, 3);
+    const items = state.data.listings.filter(l => !l.deco && l.points.length).sort((a, b) => (b.order || 0) - (a.order || 0)).slice(0, 3);
     $('homeLatest').hidden = !items.length;
     fill(g, items.map(cardOf));
   }
@@ -1874,6 +1927,140 @@
     ]);
   }
 
+  // ---- décorateurs : une catégorie par compte décorateur, avec ses décorations à visiter en 360°
+  const decorators = () => (state.data && state.data.decorators) || [];
+  const decoName = id => (decorators().find(x => x.id === id) || {}).name || 'un décorateur';
+  const decoItems = id => state.data.listings.filter(l => l.deco === id && (state.agent || l.points.length));
+  let decoPage = null;
+  function renderDeco() {
+    const box = $('pDeco');
+    if (!decoPage) {
+      const list = decorators();
+      fill(box, [
+        editButton('decorateurs'),
+        pageHead('Décorateurs', site().decor.intro),
+        list.length ? el('div', { class: 'decogrid' }, list.map(x => {
+          const items = state.data.listings.filter(l => l.deco === x.id && l.points.length).sort((a, b) => (b.order || 0) - (a.order || 0));
+          const cover = items[0] && items[0].cover;
+          return el('a', { class: 'decocard', href: '#/decorateurs/' + x.id }, [
+            el('span', { class: 'photo', style: cover ? { backgroundImage: 'url("' + mediaURL(cover) + '")' } : {} }, [cover ? null : el('img', { src: 'logo.png', alt: '' })]),
+            el('span', { class: 'who' }, [el('b', { text: x.name }), el('small', { text: items.length ? items.length + (items.length > 1 ? ' décorations à visiter' : ' décoration à visiter') : 'Bientôt des décorations' })])
+          ]);
+        })) : el('p', { class: 'note', text: 'Aucun décorateur pour le moment.' })
+      ]);
+      return;
+    }
+    const x = decorators().find(d => d.id === decoPage);
+    if (!x) { fill(box, [pageHead('Décorateurs', null), el('p', { class: 'note', text: 'Ce décorateur n’existe plus.' }), el('a', { class: 'btn', href: '#/decorateurs', text: 'Voir tous les décorateurs' })]); return; }
+    const items = decoItems(x.id).sort((a, b) => (b.order || 0) - (a.order || 0));
+    const canNew = state.agent && (isAdmin() || (isDeco() && myUid() === x.id));
+    const grid = el('div', { class: 'grid' });
+    if (canNew) grid.append(el('button', { type: 'button', class: 'card new', onclick: () => newListing(x.id) }, [el('div', {}, [el('div', { class: 'plus', html: ICON.plus }), el('span', { text: 'Nouvelle décoration' })])]));
+    items.forEach(l => grid.append(cardOf(l)));
+    const n = items.filter(l => l.points.length).length;
+    fill(box, [
+      el('div', { class: 'cat-head' }, [el('div', {}, [
+        el('h1', { text: x.name }),
+        el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' })
+      ])]),
+      el('div', { style: { height: '26px' } }),
+      grid,
+      !items.length && !canNew ? el('p', { class: 'empty', text: 'Pas encore de décoration dans cette catégorie.' }) : null
+    ]);
+  }
+
+  // ---- avis des clients (tout le monde peut en publier un)
+  let reviews = null, reviewsLoading = false;
+  const STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.6l-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9Z"/></svg>';
+  function starsEl(n, cls) {
+    const box = el('span', { class: 'stars' + (cls ? ' ' + cls : ''), role: 'img', 'aria-label': (Math.round(n * 10) / 10).toString().replace('.', ',') + ' sur 5' });
+    for (let i = 1; i <= 5; i++) {
+      const fillPct = Math.max(0, Math.min(1, n - (i - 1))) * 100;
+      const st = el('span', { class: 'star', html: STAR + STAR });
+      st.style.setProperty('--f', fillPct + '%');   // part remplie de l'étoile (demi-étoiles comprises)
+      box.append(st);
+    }
+    return box;
+  }
+  async function loadReviews() {
+    if (reviewsLoading || !API) return;
+    reviewsLoading = true;
+    try { reviews = (await api('GET', '/api/reviews')).items; } catch (e) { if (!reviews) reviews = []; }
+    reviewsLoading = false;
+    if (currentPage === 'avis') renderAvis();
+  }
+  function renderAvis() {
+    const box = $('pAvis');
+    if (!reviews) { fill(box, [pageHead('Avis', site().reviews.intro), el('p', { class: 'help', text: 'Chargement des avis…' })]); loadReviews(); return; }
+    const n = reviews.length, avg = n ? reviews.reduce((s, r) => s + r.stars, 0) / n : 0;
+    const dist = [5, 4, 3, 2, 1].map(k => [k, reviews.filter(r => r.stars === k).length]);
+    const summary = el('div', { class: 'avis-sum' }, [
+      el('p', { class: 'avg' }, [n ? (Math.round(avg * 10) / 10).toFixed(1).replace('.', ',') : '–', el('small', { text: ' / 5' })]),
+      starsEl(avg, 'big'),
+      el('p', { class: 'count', text: n ? n + (n > 1 ? ' avis' : ' avis') : 'Aucun avis pour le moment' }),
+      el('div', { class: 'dist' }, dist.map(([k, c]) => el('div', { class: 'distrow' }, [
+        el('span', { text: k + ' ★' }), el('span', { class: 'bar' }, [el('i', { style: { width: (n ? c / n * 100 : 0) + '%' } })]), el('span', { class: 'c', text: String(c) })
+      ])))
+    ]);
+    // formulaire
+    let stars = 0;
+    const nameIn = el('input', { id: 'rvName', maxlength: 60, autocomplete: 'name', placeholder: 'Ex. Jean Dupont' });
+    const textIn = el('textarea', { id: 'rvText', maxlength: 1000, rows: 5, placeholder: 'Racontez votre expérience avec le Dynasty 8…' });
+    const trap = el('input', { name: 'website', tabindex: '-1', autocomplete: 'off', class: 'trap', 'aria-hidden': 'true' });
+    const pick = el('div', { class: 'starpick', role: 'radiogroup', 'aria-label': 'Note' });
+    const drawPick = () => fill(pick, [1, 2, 3, 4, 5].map(k => el('button', {
+      type: 'button', role: 'radio', 'aria-checked': String(stars === k), 'aria-label': k + (k > 1 ? ' étoiles' : ' étoile'), class: k <= stars ? 'on' : '', html: STAR,
+      onclick: () => { stars = k; drawPick(); pick.querySelector('[aria-checked="true"]').focus(); }
+    })));
+    drawPick();
+    pick.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { stars = Math.min(5, stars + 1); drawPick(); pick.querySelector('[aria-checked="true"]').focus(); e.preventDefault(); }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { stars = Math.max(1, stars - 1); drawPick(); pick.querySelector('[aria-checked="true"]').focus(); e.preventDefault(); }
+    });
+    const msg = el('p', { class: 'note error', hidden: true });
+    const send = el('button', { type: 'submit', class: 'btn primary', id: 'rvSend', text: 'Publier mon avis' });
+    const form = el('form', { class: 'avis-form', novalidate: true }, [
+      el('h2', { text: 'Donner mon avis' }),
+      field('Nom et prénom', nameIn),
+      el('div', { class: 'field' }, [el('span', { text: 'Note' }), pick]),
+      field('Votre avis', textIn),
+      trap, msg, send
+    ]);
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      msg.hidden = true; msg.className = 'note error';
+      if (nameIn.value.trim().length < 2) { msg.textContent = 'Indiquez votre nom et votre prénom.'; msg.hidden = false; nameIn.focus(); return; }
+      if (!stars) { msg.textContent = 'Choisissez une note de 1 à 5 étoiles.'; msg.hidden = false; return; }
+      if (textIn.value.trim().length < 5) { msg.textContent = 'Écrivez quelques mots sur votre expérience.'; msg.hidden = false; textIn.focus(); return; }
+      send.disabled = true;
+      try {
+        reviews = (await api('POST', '/api/reviews', { name: nameIn.value.trim(), stars, text: textIn.value.trim(), website: trap.value })).items;
+        renderAvis();
+        toast('Merci ! Votre avis est publié.', 4500);
+      } catch (x) { msg.textContent = x.message; msg.hidden = false; send.disabled = false; }
+    });
+    const admin = state.agent && isAdmin() && !!state.user;
+    const list = el('div', { class: 'avis-list' }, n ? reviews.map(r => el('article', { class: 'avis' }, [
+      el('header', {}, [
+        el('span', { class: 'avatar', text: (r.name || '?').trim().charAt(0).toUpperCase() }),
+        el('div', {}, [el('b', { text: r.name }), el('time', { datetime: r.at, text: new Date(r.at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) })]),
+        starsEl(r.stars)
+      ]),
+      el('p', { class: 'txt', text: r.text }),
+      admin ? el('button', {
+        type: 'button', class: 'btn danger', text: 'Supprimer cet avis', onclick: async () => {
+          if (!(await confirmBox('Supprimer l’avis de ' + r.name + ' ?', 'Il disparaîtra du site tout de suite.', 'Supprimer'))) return;
+          try { reviews = (await api('DELETE', '/api/reviews/' + encodeURIComponent(r.id))).items; renderAvis(); toast('Avis supprimé.'); } catch (x) { toast(x.message, 5000); }
+        }
+      }) : null
+    ])) : [el('p', { class: 'note', text: 'Soyez le premier à donner votre avis !' })]);
+    fill(box, [
+      editButton('avis'),
+      pageHead('Avis', site().reviews.intro),
+      el('div', { class: 'avis-layout' }, [el('div', { class: 'avis-side' }, [summary, form]), list])
+    ]);
+  }
+
   // ---- éditeurs (admin)
   const siteChanged = () => { markDirty(); refreshPage(); };
   const RICH_HELP = 'Ligne vide = nouveau paragraphe. Mets un passage en gras en l’entourant de deux astérisques : **comme ceci**.';
@@ -1943,6 +2130,18 @@
     return wrap;
   }
   const EDITORS = {
+    avis() {
+      const s = site().reviews;
+      openSheet('Avis', [el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 3 }),
+        el('p', { class: 'note', text: 'Pour retirer un avis, utilise le bouton « Supprimer cet avis » sous l’avis concerné.' })],
+      [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
+    decorateurs() {
+      const s = site().decor;
+      openSheet('Décorateurs', [el('p', { class: 'help', text: RICH_HELP }), edText('Introduction', s, 'intro', { rows: 3 }),
+        el('p', { class: 'note', text: 'Chaque compte « Décorateur » (bouton Comptes) a automatiquement sa catégorie ici.' })],
+      [el('button', { type: 'button', class: 'btn primary', text: 'Terminé', onclick: closeSheet })]);
+    },
     accueil() {
       const s = site().home;
       s.photos = (s.photos || []).filter(Boolean);
@@ -2013,6 +2212,8 @@
       const parts = h.replace(/^\/+/, '').split('/').filter(Boolean);
       const page = PAGE_TITLES[parts[0]] ? parts[0] : 'accueil';
       if (page === 'catalogue') state.filter.type = typeFromSlug(parts[1] || '') || 'all';
+      if (page === 'decorateurs') decoPage = parts[1] || null;
+      if (page === 'avis') loadReviews();
       lastPageHash = '#/' + (page === 'accueil' ? '' : parts.join('/'));
       closeVisit();
       showPage(page);
