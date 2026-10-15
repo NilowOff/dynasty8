@@ -1545,7 +1545,7 @@
     const equiIn = el('input', { id: 'wizEqui', type: 'file', accept: 'image/*', hidden: true, onchange: e => useEquirect(e.target.files[0], nameIn.value) });
     const drop = el('div', { class: 'drop' }, [
       el('b', { text: 'Dépose ici tous les screens de ce point' }),
-      el('p', { text: 'Le tour complet, les rangées vers le haut et vers le bas, le plafond et le sol. L’ordre de prise de vue est retrouvé grâce à la date des fichiers.' }),
+      el('p', { text: 'Nomme-les 1, 2, 3… dans l’ordre où tu les as pris : l’assistant se sert de ces numéros pour placer chaque screen.' }),
       el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' } }, [
         el('button', { type: 'button', class: 'btn primary', text: 'Choisir les screens', onclick: () => input.click() }),
         el('button', { type: 'button', class: 'btn', text: 'J’ai déjà une image 360°', onclick: () => equiIn.click() })
@@ -1555,30 +1555,53 @@
     ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
     drop.addEventListener('drop', e => setFiles(e.dataTransfer.files));
     const thumbs = el('div', { class: 'thumbs', id: 'wizThumbs' });
+    // règle de prise de vue : l'avant-dernier screen est le sol, le dernier le plafond
+    const polesIn = el('input', { type: 'checkbox', id: 'wizPoles', checked: wiz.lastArePoles !== false, onchange: e => { wiz.lastArePoles = e.target.checked; drawThumbs(); } });
+    const polesField = el('label', { class: 'checkline' }, [polesIn, el('span', { text: 'L’avant-dernier screen est le sol et le dernier est le plafond' })]);
     const go = el('button', { type: 'button', class: 'btn primary', id: 'wizGo', text: 'Assembler', disabled: true, onclick: () => runStitch(nameIn.value) });
     const count = el('span', { id: 'wizCount', class: 'help' });
     function setFiles(list) {
       const arr = [...list].filter(f => /^image\//.test(f.type));
-      arr.sort((a, b) => (a.lastModified - b.lastModified) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      // ordre des numéros dans le nom (1, 2, … 10, 11) ; sans numéro, ordre de prise de vue
+      const numbered = arr.length && arr.every(f => /\d/.test(f.name)) && new Set(arr.map(f => f.name)).size === arr.length;
+      arr.sort((a, b) => numbered ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : (a.lastModified - b.lastModified) || a.name.localeCompare(b.name, undefined, { numeric: true }));
       wiz.files = arr;
-      thumbs.innerHTML = '';
-      arr.forEach((f, i) => {
-        const url = URL.createObjectURL(f);
-        thumbs.append(el('div', { class: 'thumb-card' }, [el('img', { src: url, alt: '', onload: () => URL.revokeObjectURL(url) }), el('span', { class: 'num', text: String(i + 1) })]));
-      });
-      count.textContent = arr.length ? arr.length + ' screens' : '';
+      drawThumbs();
+      count.textContent = arr.length ? arr.length + ' screens' + (numbered ? ', dans l’ordre de leurs numéros' : '') : '';
       go.disabled = arr.length < 4;
       if (arr.length && arr.length < 4) toast('Il faut au moins 4 screens qui se recouvrent.');
+      if (arr.length && !numbered) toast('Les noms des screens n’ont pas de numéro : ils sont rangés par date. Nomme-les 1, 2, 3… pour être sûr de l’ordre.', 6000);
+    }
+    function drawThumbs() {
+      thumbs.innerHTML = '';
+      const n = wiz.files.length, poles = wiz.lastArePoles !== false && n >= 6;
+      wiz.files.forEach((f, i) => {
+        const url = URL.createObjectURL(f);
+        const tag = poles && i === n - 2 ? 'Sol' : poles && i === n - 1 ? 'Plafond' : null;
+        thumbs.append(el('div', { class: 'thumb-card' + (tag ? ' pole' : '') }, [
+          el('img', { src: url, alt: '', onload: () => URL.revokeObjectURL(url) }),
+          el('span', { class: 'num', text: String(i + 1) }),
+          tag ? el('span', { class: 'role', text: tag }) : null,
+          el('small', { class: 'fname', text: f.name })
+        ]));
+      });
     }
     body.append(steps(0),
       el('div', { class: 'panel' }, [field('Nom de la pièce', nameIn)]),
       drop, input, equiIn,
       el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' } }, [go, count]),
+      polesField,
       thumbs,
       el('div', { class: 'panel' }, [
-        el('h4', { text: 'Rappel pour de bons screens' }),
-        el('p', { class: 'help', text: 'Caméra libre à hauteur d’yeux, HUD caché. Ne déplace jamais la caméra pendant un point : fais-la seulement tourner. Tour complet d’environ 12 screens qui se recouvrent de moitié, puis une rangée à mi-hauteur vers le haut et une vers le bas, puis le plafond et le sol. Garde le même zoom.' })
+        el('h4', { text: 'Comment prendre et nommer les screens' }),
+        el('ol', { class: 'howto' }, [
+          el('li', { text: 'Place la caméra au point de départ, HUD caché, et garde le même zoom pour tout le point. Ne déplace jamais la caméra : fais-la seulement tourner.' }),
+          el('li', { text: 'Screen 1 : face au départ. Puis tourne vers la droite, un peu à chaque fois (chaque screen recouvre bien le précédent), jusqu’à revenir juste à gauche du départ.' }),
+          el('li', { text: 'Avant-dernier screen : le sol (regarde droit vers le bas). Dernier screen : le plafond (regarde droit vers le haut).' }),
+          el('li', { text: 'Nomme les fichiers 1, 2, 3… dans cet ordre, puis dépose-les tous ici.' })
+        ])
       ]));
+    if (wiz.files.length) { drawThumbs(); count.textContent = wiz.files.length + ' screens'; go.disabled = wiz.files.length < 4; }
   }
   async function useEquirect(file, name) {
     if (!file) return;
@@ -1598,10 +1621,12 @@
     const lab = el('b', { text: 'Préparation…' }), bar = el('i'), pct = el('span', { class: 'help' });
     body.append(steps(1), el('div', { class: 'progress' }, [lab, el('div', { class: 'bar' }, [bar]), pct]),
       el('p', { class: 'help', text: 'Compte entre 20 secondes et une minute selon le nombre de screens. Garde cet onglet ouvert.' }));
-    const weights = { 'Lecture des captures': [0, 5], 'Analyse des captures': [5, 25], 'Recherche des recouvrements': [25, 40], 'Vérification des recouvrements': [40, 55], 'Alignement des murs unis': [55, 60], 'Calcul de la position des captures': [60, 62], 'Ajustement global': [62, 66], 'Placement du plafond et du sol': [66, 99], 'Prêt': [99, 100] };
+    const weights = { 'Lecture des captures': [0, 3], 'Analyse des captures': [3, 12], 'Recherche des recouvrements': [12, 17], 'Vérification des recouvrements': [17, 22], 'Placement du tour': [22, 62], 'Alignement des murs unis': [55, 60], 'Calcul de la position des captures': [60, 62], 'Ajustement global': [62, 65], 'Placement du plafond et du sol': [65, 99], 'Prêt': [99, 100] };
     wiz.busy = true;
     try {
+      const n = wiz.files.length, poles = wiz.lastArePoles !== false && n >= 6;
       wiz.S = await Stitcher.prepare(wiz.files, {
+        roles: wiz.files.map((f, i) => poles && i === n - 2 ? 'down' : poles && i === n - 1 ? 'up' : 'auto'),
         onProgress: (s, p) => { const w = weights[s] || [0, 100]; const v = w[0] + (w[1] - w[0]) * p; lab.textContent = s; bar.style.width = v.toFixed(1) + '%'; pct.textContent = Math.round(v) + ' %'; }
       });
       lab.textContent = 'Aperçu…'; bar.style.width = '100%';

@@ -900,7 +900,7 @@
     const progress = opts.onProgress || (() => {});
     const roles = opts.roles || [];
     const rnd = mulberry32(42);
-    const S = { cams: [], f: 0, fRender: 0 };
+    const S = { cams: [], f: 0, fRender: 0, plane: !!opts.plane };
 
     progress('Lecture des captures', 0);
     const bitmaps = [];
@@ -1242,19 +1242,19 @@
 
   function poleTools(S, cam, sizes) {
     const g = gaussianBlur(cam.gray, cam.aw, cam.ah, 1.2);
-    const camGrad = gradMag(g, cam.aw, cam.ah);
+    const camGrad = gradMag(g, cam.aw, cam.ah), camTone = gaussianBlur(cam.gray, cam.aw, cam.ah, 3);
     const panos = {};
     for (const [W, H] of sizes) {
       const gp = grayPano(S, W, H, c => c !== cam && c.role !== 'up' && c.role !== 'down');
       const gg = gradMag(gaussianBlur(gp.gray, W, H, 1.0), W, H);
-      panos[W] = { ...gp, grad: gg };
+      panos[W] = { ...gp, grad: gg, tone: gaussianBlur(gp.gray, W, H, 1.5) };
     }
     const base = side => side < 0
       ? Float64Array.of(1, 0, 0, 0, 0, -1, 0, 1, 0)    // regarde vers le haut : z_cam -> (0,-1,0)
       : Float64Array.of(1, 0, 0, 0, 0, 1, 0, -1, 0);   // regarde vers le bas : z_cam -> (0,1,0)
     // pixels de la calotte couverts par le tour
     const capPixels = (pano, side) => {
-      const { W, H, mask, grad } = pano, dirs = [], vals = [];
+      const { W, H, mask, grad, tone } = pano, dirs = [], vals = [], tones = [];
       for (let y = 1; y < H - 1; y++) {
         const lat = Math.PI / 2 - (y + 0.5) / H * Math.PI;
         if (side < 0 ? lat < 15 * DEG : lat > -15 * DEG) continue;
@@ -1262,15 +1262,15 @@
         for (let x = 1; x < W - 1; x++) {
           if (!mask[y * W + x] || !mask[(y - 1) * W + x] || !mask[(y + 1) * W + x]) continue;
           const lon = (x + 0.5) / W * 2 * Math.PI - Math.PI;
-          dirs.push(cl * Math.sin(lon), dy, cl * Math.cos(lon)); vals.push(grad[y * W + x]);
+          dirs.push(cl * Math.sin(lon), dy, cl * Math.cos(lon)); vals.push(grad[y * W + x]); tones.push(tone[y * W + x]);
         }
       }
-      return { dirs: Float32Array.from(dirs), vals: Float32Array.from(vals) };
+      return { dirs: Float32Array.from(dirs), vals: Float32Array.from(vals), tones: Float32Array.from(tones) };
     };
     const score = (cap, R, fscale, c, side) => {
       const Rt = T3(R), fs = S.f * fscale, cx = cam.aw / 2, cy = cam.ah / 2, w = cam.aw, h = cam.ah;
-      let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
-      const d = cap.dirs, v = cap.vals;
+      let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, ta = 0, tb = 0, taa = 0, tbb = 0, tab = 0;
+      const d = cap.dirs, v = cap.vals, tv = cap.tones;
       for (let k = 0, q = 0; k < v.length; k++, q += 3) {
         let dx = d[q], dy = d[q + 1], dz = d[q + 2];
         if (c) { const t = dy * side; if (t <= 0.02) continue; dx = dx / t - c[0]; dy = dy / t - c[1]; dz = dz / t - c[2]; }
@@ -1278,12 +1278,14 @@
         if (Z <= 1e-6) continue;
         const u = fs * (Rt[0] * dx + Rt[1] * dy + Rt[2] * dz) / Z + cx, vv = fs * (Rt[3] * dx + Rt[4] * dy + Rt[5] * dz) / Z + cy;
         if (u < 2 || vv < 2 || u > w - 3 || vv > h - 3) continue;
-        const a = sampleGray(camGrad, w, h, u, vv), b = v[k];
+        const a = sampleGray(camGrad, w, h, u, vv), b = v[k], c2 = sampleGray(camTone, w, h, u, vv), e = tv[k];
         n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+        ta += c2; tb += e; taa += c2 * c2; tbb += e * e; tab += c2 * e;
       }
       if (n < Math.max(150, v.length * 0.06)) return -1;
-      const cov = sab - sa * sb / n, va = saa - sa * sa / n, vb = sbb - sb * sb / n;
-      return cov / Math.sqrt(va * vb + 1e-9);
+      // contours + teintes (le mur de briques et les murs clairs ne se confondent pas)
+      const ncc = (s1, s2, s11, s22, s12) => { const cov = s12 - s1 * s2 / n, v1 = s11 - s1 * s1 / n, v2 = s22 - s2 * s2 / n; return cov / Math.sqrt(v1 * v2 + 1e-9); };
+      return 0.6 * ncc(sa, sb, saa, sbb, sab) + 0.4 * ncc(ta, tb, taa, tbb, tab);
     };
     const make = (side, p) => mul3(base(side), rodrigues(p[0], p[1], p[2]));
     return { panos, capPixels, score, make };
@@ -1355,28 +1357,36 @@
       }
     }
     if (!best.p) { cam.aligned = false; cam.active = false; cam.poleScore = -1; progress(1); return; }
-    // affinage : la caméra a pu bouger un peu (modèle « plan du sol/plafond »)
-    // grille de départs sur le décalage horizontal, puis affinage complet
-    const capP = T.capPixels(T.panos[1024], best.side), capQ = T.capPixels(T.panos[512], best.side);
-    const okP = q => Math.hypot(q[0], q[1]) <= MAXT && Math.abs(q[3]) <= 0.25 && Math.hypot(q[4], q[5], q[6]) <= 0.6;
-    let gbest = null;
-    for (let cx = -0.3; cx <= 0.301; cx += 0.1) {
-      for (let cz = -0.3; cz <= 0.301; cz += 0.1) {
-        const fn = q => {
-          const full = [q[0], q[1], q[2], q[3], cx, q[4], cz];
-          return okP(full) ? -T.score(capQ, T.make(best.side, full), Math.exp(q[3]), [cx, q[4], cz], best.side) : 2;
-        };
-        const r = nelderMead(fn, [...best.p, 0], [1.5 * DEG, 1.5 * DEG, 1.5 * DEG, 0.015, 0.05], 70);
-        if (!gbest || r.f < gbest.f) gbest = { f: r.f, x: [r.x[0], r.x[1], r.x[2], r.x[3], cx, r.x[4], cz] };
-      }
-      progress(0.8 + 0.15 * (cx + 0.3) / 0.6); await tick();
-    }
-    const fnP = q => okP(q) ? -T.score(capP, T.make(best.side, q), Math.exp(q[3]), [q[4], q[5], q[6]], best.side) : 2;
-    let rp = nelderMead(fnP, gbest.x, [0.7 * DEG, 0.7 * DEG, 0.7 * DEG, 0.008, 0.03, 0.03, 0.03], 300);
-    rp = nelderMead(fnP, rp.x, [0.3 * DEG, 0.3 * DEG, 0.3 * DEG, 0.004, 0.01, 0.01, 0.01], 200);
-    const rotOnly = T.score(capP, T.make(best.side, best.p), Math.exp(best.p[3]), null, best.side);
+    // dans GTA la caméra tourne sur place : rotation seule (le modèle « caméra décalée » déformait le sol
+    // et le plafond des pièces peu détaillées). Il reste disponible en option (plane: true).
     let planeC = null;
-    if (-rp.f > rotOnly + 0.02) { best = { s: -rp.f, p: rp.x.slice(0, 4), side: best.side }; planeC = rp.x.slice(4, 7); }
+    if (S.plane) {
+      const capP = T.capPixels(T.panos[1024], best.side), capQ = T.capPixels(T.panos[512], best.side);
+      const okP = q => Math.hypot(q[0], q[1]) <= MAXT && Math.abs(q[3]) <= 0.25 && Math.hypot(q[4], q[5], q[6]) <= 0.6;
+      let gbest = null;
+      for (let cx = -0.3; cx <= 0.301; cx += 0.1) {
+        for (let cz = -0.3; cz <= 0.301; cz += 0.1) {
+          const fn = q => {
+            const full = [q[0], q[1], q[2], q[3], cx, q[4], cz];
+            return okP(full) ? -T.score(capQ, T.make(best.side, full), Math.exp(q[3]), [cx, q[4], cz], best.side) : 2;
+          };
+          const r = nelderMead(fn, [...best.p, 0], [1.5 * DEG, 1.5 * DEG, 1.5 * DEG, 0.015, 0.05], 70);
+          if (!gbest || r.f < gbest.f) gbest = { f: r.f, x: [r.x[0], r.x[1], r.x[2], r.x[3], cx, r.x[4], cz] };
+        }
+        progress(0.8 + 0.15 * (cx + 0.3) / 0.6); await tick();
+      }
+      const fnP = q => okP(q) ? -T.score(capP, T.make(best.side, q), Math.exp(q[3]), [q[4], q[5], q[6]], best.side) : 2;
+      let rp = nelderMead(fnP, gbest.x, [0.7 * DEG, 0.7 * DEG, 0.7 * DEG, 0.008, 0.03, 0.03, 0.03], 300);
+      rp = nelderMead(fnP, rp.x, [0.3 * DEG, 0.3 * DEG, 0.3 * DEG, 0.004, 0.01, 0.01, 0.01], 200);
+      const rotOnly = T.score(capP, T.make(best.side, best.p), Math.exp(best.p[3]), null, best.side);
+      if (-rp.f > rotOnly + 0.02) { best = { s: -rp.f, p: rp.x.slice(0, 4), side: best.side }; planeC = rp.x.slice(4, 7); }
+    } else {
+      // affinage final en rotation seule, à la résolution fine
+      const capP = T.capPixels(T.panos[1024], best.side);
+      const fnR = q => (Math.hypot(q[0], q[1]) > MAXT || Math.abs(q[3]) > 0.2) ? 2 : -T.score(capP, T.make(best.side, q), Math.exp(q[3]), null, best.side);
+      const r = nelderMead(fnR, best.p, [0.5 * DEG, 0.5 * DEG, 0.5 * DEG, 0.005], 120);
+      if (-r.f > best.s) best = { s: -r.f, p: r.x, side: best.side };
+    }
     await tick();
     progress(1);
     cam.R = T.make(best.side, best.p);
@@ -1676,5 +1686,5 @@
     });
   }
 
-  global.Stitcher = { _alignPair: alignPair, _refinePair: refinePair, prepare, renderEquirect, adjustPole, setPoleRole, summary, _scorePole: scorePole, _poleTools: poleTools, _match: matchFeatures, _ransac: ransacHomography, _nm: nelderMead, _rod: rodrigues, _mul: mul3, _T: T3 };
+  global.Stitcher = { prepare, renderEquirect, adjustPole, setPoleRole, summary, _scorePole: scorePole, _poleTools: poleTools, _match: matchFeatures, _ransac: ransacHomography, _nm: nelderMead, _rod: rodrigues, _mul: mul3, _T: T3 };
 })(typeof window !== 'undefined' ? window : self);
