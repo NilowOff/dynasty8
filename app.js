@@ -2045,7 +2045,8 @@
     showTheme();
     if (state.data) refreshPage();   // les éléments dessinés par le site (logo de l'affiche…) suivent
   }
-  $('themeBtn').addEventListener('click', () => setTheme(themeNow() === 'dark' ? 'light' : 'dark', true));
+  // le clic est géré dans la page elle-même ; ici on redessine ce qui dépend du thème
+  document.addEventListener('d8-theme', () => { showTheme(); if (state.data) refreshPage(); });
   // tant que le visiteur n'a rien choisi, on suit le réglage de son appareil
   try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { let saved = null; try { saved = localStorage.getItem('d8-theme'); } catch (x) { } if (!saved) setTheme(e.matches ? 'dark' : 'light', false); }); } catch (e) { }
   showTheme();
