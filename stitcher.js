@@ -502,6 +502,398 @@
     return { R, score: -best.f, pts: Float64Array.from(pts) };
   }
 
+  // ------------------------------------------------------------------ tour ordonné
+  // Les screens sont nommés 1, 2, 3… : depuis le point de départ, on tourne vers la droite
+  // et le dernier screen du tour revient juste à gauche du départ. On s'appuie sur cet ordre :
+  // chaque screen est placé par rapport à ses voisins, les angles doivent croître et le tour
+  // doit faire 360° (ce qui donne aussi le bon zoom).
+  const wrapDeg = a => ((a + 180) % 360 + 360) % 360 - 180;
+  function ypr(R) { return { yaw: Math.atan2(R[2], R[8]), pitch: Math.asin(Math.max(-1, Math.min(1, -R[5]))), roll: Math.atan2(R[3], R[4]) }; }
+  const makeYPR = (y, p, r) => mul3(rodrigues(0, y, 0), mul3(rodrigues(p, 0, 0), rodrigues(0, 0, r)));
+  function relRotOf(e, fv) {   // b_i ≈ R b_j
+    const as = [], cs = [];
+    for (let k = 0; k < e.pts.length; k += 4) { cs.push(bearing(e.pts[k], e.pts[k + 1], fv)); as.push(bearing(e.pts[k + 2], e.pts[k + 3], fv)); }
+    return kabsch(as, cs);
+  }
+  function smoothOf(c) {
+    if (!c._smooth) c._smooth = gaussianBlur(c.gray, c.aw, c.ah, 2.0);
+    return c._smooth;
+  }
+  // alignement direct de deux screens (contours + teintes) : rotations R telles que b_A ≈ R b_B
+  function pairSamples(A, f, step) {
+    const ga = gradOf(A), ia = smoothOf(A);
+    const P = { bx: [], by: [], bz: [], g: [], i: [], us: [], vs: [] };
+    for (let y = 6; y < A.ah - 6; y += step) for (let x = 6; x < A.aw - 6; x += step) {
+      const u = x - A.aw / 2, v = y - A.ah / 2, L = Math.sqrt(u * u + v * v + f * f);
+      P.bx.push(u / L); P.by.push(v / L); P.bz.push(f / L); P.g.push(ga[y * A.aw + x]); P.i.push(ia[y * A.aw + x]); P.us.push(u); P.vs.push(v);
+    }
+    return P;
+  }
+  function pairScore(B, f, P, q) {
+    const gb = gradOf(B), ib = smoothOf(B), cxB = B.aw / 2, cyB = B.ah / 2;
+    const R = makeYPR(q[0], q[1], q[2]);   // b_B = R^T b_A
+    const n0 = P.g.length;
+    let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, ta = 0, tb = 0, taa = 0, tbb = 0, tab = 0;
+    for (let k = 0; k < n0; k++) {
+      const bx = P.bx[k], by = P.by[k], bz = P.bz[k];
+      const z = R[2] * bx + R[5] * by + R[8] * bz;
+      if (z <= 0.05) continue;
+      const u = f * (R[0] * bx + R[3] * by + R[6] * bz) / z + cxB, v = f * (R[1] * bx + R[4] * by + R[7] * bz) / z + cyB;
+      if (u < 2 || v < 2 || u > B.aw - 3 || v > B.ah - 3) continue;
+      const a = P.g[k], b = sampleGray(gb, B.aw, B.ah, u, v), c = P.i[k], d = sampleGray(ib, B.aw, B.ah, u, v);
+      n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+      ta += c; tb += d; taa += c * c; tbb += d * d; tab += c * d;
+    }
+    if (n < n0 * 0.15) return -1;
+    const ncc = (s1, s2, s11, s22, s12) => { const cov = s12 - s1 * s2 / n, v1 = s11 - s1 * s1 / n, v2 = s22 - s2 * s2 / n; return cov / Math.sqrt(v1 * v2 + 1e-9); };
+    return 0.6 * ncc(sa, sb, saa, sbb, sab) + 0.4 * ncc(ta, tb, taa, tbb, tab);
+  }
+  function pairResult(A, B, f, P, q, s) {
+    const R = makeYPR(q[0], q[1], q[2]);
+    const idx = P.g.map((v, k) => k).sort((p, r) => P.g[r] - P.g[p]);
+    const pts = [];
+    for (const k of idx) {
+      const bx = P.bx[k], by = P.by[k], bz = P.bz[k];
+      const z = R[2] * bx + R[5] * by + R[8] * bz; if (z <= 0.05) continue;
+      const u = f * (R[0] * bx + R[3] * by + R[6] * bz) / z, v = f * (R[1] * bx + R[4] * by + R[7] * bz) / z;
+      if (Math.abs(u) > B.aw / 2 - 4 || Math.abs(v) > B.ah / 2 - 4) continue;
+      pts.push(P.us[k], P.vs[k], u, v);
+      if (pts.length >= 60 * 4) break;
+    }
+    return { R, q, yaw: q[0] / DEG, s, pts: Float64Array.from(pts) };
+  }
+  const pairBad = q => Math.abs(q[1]) > 18 * DEG || Math.abs(q[2]) > 10 * DEG;
+  // recherche complète : lacet dans [-range, range] (degrés), jusqu'à 5 positions possibles
+  function alignPair(A, B, f, lo, hi) {
+    const coarse = pairSamples(A, f, 10), fine = pairSamples(A, f, 5);
+    const grid = [];
+    for (let yaw = lo; yaw <= hi; yaw += 1.25) {
+      if (Math.abs(yaw) < 1) { grid.push({ s: -1, q: [yaw * DEG, 0, 0] }); continue; }
+      let best = null;
+      for (const pitch of [-5, 0, 5]) { const s = pairScore(B, f, coarse, [yaw * DEG, pitch * DEG, 0]); if (!best || s > best.s) best = { s, q: [yaw * DEG, pitch * DEG, 0] }; }
+      grid.push(best);
+    }
+    const peaks = grid.filter((g, i) => g.s > 0.12 && (!grid[i - 1] || g.s >= grid[i - 1].s) && (!grid[i + 1] || g.s >= grid[i + 1].s)).sort((a, b) => b.s - a.s).slice(0, 5);
+    const mid = [];
+    for (const pk of peaks) {
+      const r = nelderMead(q => pairBad(q) ? 2 : -pairScore(B, f, coarse, q), pk.q, [1 * DEG, 1 * DEG, 1 * DEG], 50);
+      if (-r.f > 0.12 && !mid.some(o => Math.abs(o.x[0] - r.x[0]) < 1.5 * DEG)) mid.push(r);
+    }
+    mid.sort((a, b) => a.f - b.f);
+    return mid.map((r, i) => {
+      if (i < 3) { const r2 = nelderMead(q => pairBad(q) ? 2 : -pairScore(B, f, fine, q), r.x, [0.5 * DEG, 0.5 * DEG, 0.5 * DEG], 35); return pairResult(A, B, f, fine, r2.x, -r2.f); }
+      return pairResult(A, B, f, fine, r.x, -r.f);
+    });
+  }
+  // affinage d'une position connue avec un autre zoom (focale)
+  function refinePair(A, B, f, q0, s0, iters) {
+    const fine = pairSamples(A, f, 5);
+    if (s0 !== undefined) return pairResult(A, B, f, fine, q0, s0);   // simple mise à l'échelle, sans affinage
+    const r = nelderMead(q => pairBad(q) ? 2 : -pairScore(B, f, fine, q), q0, [0.6 * DEG, 0.5 * DEG, 0.5 * DEG], iters || 40);
+    return pairResult(A, B, f, fine, r.x, -r.f);
+  }
+
+  // zoom (focale) qui explique le mieux les points communs par une simple rotation de la caméra
+  function focalFromEdges(edges, aw) {
+    const strong = edges.filter(e => !e.direct && !e.weak && e.n >= 20 && e.pts.length >= 40);
+    if (strong.length < 3) return null;
+    const cost = fv => {
+      let s = 0;
+      for (const e of strong) {
+        const R = relRotOf(e, fv), p = e.pts;
+        for (let k = 0; k < p.length; k += 4) {
+          const a = bearing(p[k], p[k + 1], fv), b = bearing(p[k + 2], p[k + 3], fv), v = mv3(R, b[0], b[1], b[2]);
+          const d2 = ((a[0] - v[0]) ** 2 + (a[1] - v[1]) ** 2 + (a[2] - v[2]) ** 2) * fv * fv;   // ≈ écart en pixels²
+          s += Math.min(d2, 16);
+        }
+      }
+      return s;
+    };
+    let best = null;
+    for (let x = Math.log(aw * 0.12); x <= Math.log(aw * 1.6); x += 0.04) { const c = cost(Math.exp(x)); if (!best || c < best.c) best = { x, c }; }
+    let lo = best.x - 0.04, hi = best.x + 0.04;
+    for (let it = 0; it < 12; it++) { const a = hi - (hi - lo) * 0.618, b = lo + (hi - lo) * 0.618; if (cost(Math.exp(a)) < cost(Math.exp(b))) hi = b; else lo = a; }
+    return Math.exp((lo + hi) / 2);
+  }
+
+  async function solveRing(S, cand, f0, edges, progress) {
+    if (cand.length < 4) return null;
+    const cams = S.cams;
+    const byPair = new Map();
+    for (const e of edges) { if (e.direct) continue; const k = Math.min(e.i, e.j) + '-' + Math.max(e.i, e.j), o = byPair.get(k); if (!o || e.n > o.n) byPair.set(k, e); }
+    const fFeat = focalFromEdges(edges, cams[cand[0]].aw);
+    const nStrong = edges.filter(e => !e.direct && !e.weak && e.n >= 20 && e.pts.length >= 40).length;
+    let f = fFeat || f0, ring = cand.slice(), dir = 1;
+    const dbg = S.ringDebug = { f0, fFeat, nStrong, iters: [], t: [] };
+    const T0 = performance.now(), mark = l => dbg.t.push(l + ' ' + Math.round(performance.now() - T0));
+    const hfov = () => Math.min(170, 2 * Math.atan(cams[ring[0]].aw / 2 / f) / DEG);
+    const featCand = (a, b) => {
+      const e = byPair.get(Math.min(a, b) + '-' + Math.max(a, b));
+      if (!e) return null;
+      const R = relRotOf(e, f), Rab = e.i === a ? R : T3(R), q = ypr(Rab);
+      if (Math.abs(q.pitch) > 20 * DEG || Math.abs(q.roll) > 15 * DEG) return null;
+      return { yaw: q.yaw / DEG, w: Math.min(1, e.n / 40) * (e.weak ? 0.5 : 1), src: 'feat', e };
+    };
+    // positions possibles d'un couple, calculées une fois puis affinées si le zoom change
+    const store = new Map();
+    let fOfStore = f;
+    const directs = (a, b, oneSide) => {
+      const key = a + '-' + b;
+      if (!store.has(key)) {
+        const r = Math.round(Math.min(150, 0.95 * hfov()));
+        store.set(key, { f, list: oneSide ? alignPair(cams[a], cams[b], f, dir > 0 ? -25 : -r, dir > 0 ? r : 25) : alignPair(cams[a], cams[b], f, -r, r) });
+      }
+      const st = store.get(key);
+      if (Math.abs(st.f - f) > 1e-6) {
+        st.list = st.list.map(d => {
+          const y = Math.atan(Math.tan(Math.max(-1.45, Math.min(1.45, d.q[0]))) * st.f / f);
+          return d.picked ? refinePair(cams[a], cams[b], f, [y, d.q[1], d.q[2]]) : refinePair(cams[a], cams[b], f, [y, d.q[1], d.q[2]], d.s);
+        });
+        st.f = f;
+      }
+      return st.list;
+    };
+    const cands = (a, b, lo, hi, oneSide) => {
+      const out = [];
+      const fc = featCand(a, b);
+      if (fc && fc.yaw >= lo && fc.yaw <= hi) out.push(fc);
+      for (const d of directs(a, b, oneSide)) if (d.yaw >= lo && d.yaw <= hi) out.push({ yaw: d.yaw, w: Math.max(0, d.s) * 0.9, src: 'direct', d });
+      return out;
+    };
+    // 0. sens de rotation : vers la droite d'après la consigne, vérifié sur les premiers screens
+    {
+      let s = 0; const hf = hfov();
+      for (let k = 0; k < Math.min(4, ring.length - 1); k++) {
+        const best = cands(ring[k], ring[k + 1], -0.85 * hf, 0.85 * hf).sort((x, y) => y.w - x.w)[0];
+        if (best) s += Math.sign(best.yaw) * best.w;
+      }
+      dir = s >= 0 ? 1 : -1;
+    }
+    // zoom : celui pour lequel des screens voisins se superposent le mieux (un mauvais zoom déforme les bords)
+    const zoomSearch = async (pairs, wide) => {
+      if (pairs.length < 2) return;
+      const quality = fv => {
+        let sum = 0;
+        for (const p of pairs) {
+          const yy = Math.atan(Math.tan(Math.max(-1.45, Math.min(1.45, p.yaw * DEG))) * f / fv);
+          sum += refinePair(cams[p.a], cams[p.b], fv, [yy, p.pitch || 0, 0], undefined, 40).s;
+        }
+        return sum / pairs.length;
+      };
+      const tried = [];
+      const at = async k => { tried.push({ k, q: quality(f * k) }); await tick(); };
+      const vertex = (pts, lo, hi) => {
+        let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+        for (const p of pts) { const x = Math.log(p.k), x2 = x * x; s0++; s1 += x; s2 += x2; s3 += x2 * x; s4 += x2 * x2; t0 += p.q; t1 += x * p.q; t2 += x2 * p.q; }
+        const c = solveLinear(Float64Array.of(s4, s3, s2, s3, s2, s1, s2, s1, s0), Float64Array.of(t2, t1, t0), 3);
+        if (!c || c[0] >= 0) return null;
+        return Math.max(lo, Math.min(hi, Math.exp(-c[1] / (2 * c[0]))));
+      };
+      for (const k of wide ? [0.7, 0.85, 1, 1.18, 1.4] : [0.9, 0.95, 1, 1.05, 1.1]) await at(k);
+      // le meilleur est au bord : on continue dans cette direction (dans des limites raisonnables)
+      for (let guard = 0; guard < 6; guard++) {
+        tried.sort((a, b) => a.k - b.k);
+        let bi = 0; for (let i = 1; i < tried.length; i++) if (tried[i].q > tried[bi].q) bi = i;
+        const fov = k => 2 * Math.atan(cams[pairs[0].a].aw / 2 / (f * k)) / DEG;
+        if (bi === 0 && fov(tried[0].k / 1.2) < 170) await at(tried[0].k / 1.2);
+        else if (bi === tried.length - 1 && fov(tried[bi].k * 1.2) > 25) await at(tried[bi].k * 1.2);
+        else break;
+      }
+      tried.sort((a, b) => a.k - b.k);
+      let bi = 0; for (let i = 1; i < tried.length; i++) if (tried[i].q > tried[bi].q) bi = i;
+      const near = tried.slice(Math.max(0, bi - 1), bi + 2);
+      let v = vertex(near, near[0].k, near[near.length - 1].k) || tried[bi].k;
+      for (const d of [0.96, 0.98, 1.02, 1.04]) await at(v * d);
+      const fine = tried.filter(t => t.k >= v * 0.93 && t.k <= v * 1.07);
+      v = vertex(fine, v * 0.95, v * 1.05) || v;
+      (dbg.fq = dbg.fq || []).push(tried.map(t => [Math.round(t.k * 1000) / 1000, Math.round(t.q * 1000) / 1000]));
+      f = f * v;
+    };
+    // zoom de départ : sur les premiers screens (ils font forcément partie du tour)
+    {
+      const pairs = [], hf = hfov();
+      for (let k = 0; k < Math.min(5, ring.length - 1); k++) {
+        const a = ring[k], b = ring[k + 1];
+        const best = cands(a, b, -0.85 * hf, 0.85 * hf).filter(c => c.src === 'direct').sort((x, y) => y.w - x.w)[0];
+        if (best && best.w >= 0.4) pairs.push({ a, b, yaw: best.yaw, pitch: best.d.q[1] });
+      }
+      const fBefore = f;
+      await zoomSearch(pairs, true);
+      // zoom très différent : les positions possibles sont recalculées avec le bon zoom
+      if (Math.abs(Math.log(f / fBefore)) > 0.08) store.clear();
+      mark('zoom-départ');
+    }
+    // 1. screens hors du tour (sol, plafond…) : ils ne se raccordent bien à aucun de leurs voisins
+    {
+      let changed = true;
+      while (changed && ring.length >= 4) {
+        changed = false;
+        const ev = ring.map(() => 0), hf = hfov();
+        for (let k = 0; k < ring.length; k++) {
+          const a = ring[k], b = ring[(k + 1) % ring.length];
+          const best = cands(a, b, -0.85 * hf, 0.85 * hf, true).reduce((m, x) => Math.max(m, x.w), 0);
+          ev[k] = Math.max(ev[k], best); ev[(k + 1) % ring.length] = Math.max(ev[(k + 1) % ring.length], best);
+          progress(Math.min(0.45, 0.45 * (k + 1) / ring.length)); await tick();
+        }
+        const med = ev.slice().sort((x, y) => x - y)[ev.length >> 1];
+        let worst = -1;
+        for (let k = 0; k < ring.length; k++) if (ev[k] < Math.max(0.25, 0.6 * med) && (worst < 0 || ev[k] < ev[worst])) worst = k;
+        if (worst >= 0) { ring.splice(worst, 1); changed = true; }
+      }
+    }
+    dbg.ring = ring.slice(); mark('hors-tour');
+    if (ring.length < 4) return null;
+    const M = ring.length;
+    let sol = null;
+    for (let iter = 0; iter < 2; iter++) {
+      const hf = hfov(), maxStep = 0.85 * hf;
+      // 3. mesures : voisins, voisins à deux pas, fermeture du tour (le dernier screen revient près du premier)
+      const meas = [];
+      const inDir = (lo, hi) => dir > 0 ? [lo, hi] : [-hi, -lo];
+      for (let k = 0; k < M; k++) {
+        const a = ring[k], b = ring[(k + 1) % M], close = k === M - 1;
+        const [lo, hi] = close ? inDir(-25, maxStep) : inDir(1, maxStep);
+        meas.push({ pa: k, pb: (k + 1) % M, wrap: close ? 360 * dir : 0, c: cands(a, b, lo, hi) });
+        if (M > 5) {
+          const b2 = ring[(k + 2) % M], wrap2 = k + 2 >= M;
+          const [lo2, hi2] = inDir(wrap2 ? -25 : 3, Math.min(150, 0.95 * hf));
+          meas.push({ pa: k, pb: (k + 2) % M, wrap: wrap2 ? 360 * dir : 0, c: cands(a, b2, lo2, hi2, true), skip: true });
+        }
+        progress(0.45 + 0.4 * Math.min(1, (iter + (k + 1) / M) / 2)); await tick();
+      }
+      mark('mesures' + iter);
+      // 4. choix cohérent des positions le long du tour (programmation dynamique) :
+      //    chaque pas est confirmé par le saut de deux screens qui l'englobe
+      const steps = [], typical = 360 / M;
+      for (let k = 0; k + 1 < M; k++) {
+        const m = meas.find(x => !x.skip && x.pa === k);
+        steps.push(m.c.map(c => ({ v: c.yaw, w: c.w })));
+      }
+      const skipOf = k => meas.find(x => x.skip && x.pa === k && !x.wrap);
+      const virt = steps.map(() => []);
+      const okStep = v => dir * v >= 1 && dir * v <= maxStep;
+      for (let k = 0; k < steps.length; k++) {
+        const add = (v, w) => { if (okStep(v) && !steps[k].some(c => Math.abs(c.v - v) < 1.5) && !virt[k].some(c => Math.abs(c.v - v) < 1.5)) virt[k].push({ v, w, virtual: true }); };
+        const sPrev = k >= 1 ? skipOf(k - 1) : null, sNext = k + 1 < steps.length ? skipOf(k) : null;
+        if (sPrev) for (const sc of sPrev.c) for (const c of steps[k - 1]) add(sc.yaw - c.v, 0.5 * Math.min(sc.w, c.w));
+        if (sNext) for (const sc of sNext.c) for (const c of steps[k + 1]) add(sc.yaw - c.v, 0.5 * Math.min(sc.w, c.w));
+      }
+      for (let k = 0; k < steps.length; k++) steps[k] = steps[k].concat(virt[k].sort((a, b) => b.w - a.w).slice(0, 6), [{ v: typical * dir, w: 0, unknown: true }]);
+      const pairBonus = (k, c1, c2) => {
+        let b = 0;
+        const sm = skipOf(k);
+        if (sm && !c1.unknown && !c2.unknown) for (const sc of sm.c) { const d = Math.abs(c1.v + c2.v - sc.yaw); if (d < 4) b = Math.max(b, sc.w * (1 - d / 4)); }
+        if (!c1.unknown && !c2.unknown) b -= 0.12 * Math.abs(Math.log(Math.max(0.5, Math.abs(c1.v)) / Math.max(0.5, Math.abs(c2.v))));
+        return b;
+      };
+      const bonus = [];   // bonus entre deux pas qui se suivent (calculés une fois)
+      for (let k = 1; k < steps.length; k++) bonus.push(steps[k - 1].map(c1 => steps[k].map(c2 => pairBonus(k - 1, c1, c2))));
+      // lam > 0 pénalise les grands pas : sert à ramener le tour complet vers 360°
+      const dp = lam => {
+        const un = c => c.w - lam * dir * c.v;
+        let score = steps[0].map(un), back = [];
+        for (let k = 1; k < steps.length; k++) {
+          const ns = [], bk = [];
+          for (let j = 0; j < steps[k].length; j++) {
+            let best = -1e9, bi = 0;
+            for (let i = 0; i < steps[k - 1].length; i++) { const v = score[i] + bonus[k - 1][i][j]; if (v > best) { best = v; bi = i; } }
+            ns.push(best + un(steps[k][j])); bk.push(bi);
+          }
+          score = ns; back.push(bk);
+        }
+        let j = score.indexOf(Math.max(...score));
+        const pick = [j];
+        for (let k = back.length - 1; k >= 0; k--) { j = back[k][j]; pick.unshift(j); }
+        const total = pick.reduce((t, j, k) => t + steps[k][j].v, 0);
+        return { pick, total };
+      };
+      let { pick, total } = dp(0);
+      const cm0 = meas.find(m => !m.skip && m.wrap);
+      const closeBest = cm0 && cm0.c.slice().sort((a, b) => b.w - a.w)[0];
+      if (closeBest) {
+        const target = 360 * dir - closeBest.yaw, tol = (iter === 0 ? 0.15 : 0.03) * 360;
+        if (Math.abs(total - target) > tol) {
+          let lo = 0, hi = (total - target) * dir > 0 ? 0.2 : -0.2, best = { pick, total };
+          for (let it = 0; it < 30; it++) {
+            const mid = (lo + hi) / 2, r = dp(mid);
+            if (Math.abs(r.total - target) < Math.abs(best.total - target) || (Math.abs(r.total - target) <= tol && Math.abs(best.total - target) <= tol)) best = r;
+            // trop long (dans le sens du tour) : il faut pénaliser davantage ; sinon moins
+            if ((r.total - target) * Math.sign(hi) > tol) lo = mid; else hi = mid;
+          }
+          dbg.lam = (dbg.lam || []).concat([{ total0: total, target, got: best.total, at02: dp(hi).total }]);
+          pick = best.pick; total = best.total;
+        }
+      }
+      const init = [0];
+      for (let k = 0; k + 1 < M; k++) init.push(init[k] + steps[k][pick[k]].v);
+      // 5. résolution robuste des angles (moindres carrés repondérés)
+      const solve = (useClosure, y) => {
+        y = y.slice();
+        for (let it = 0; it < 12; it++) {
+          const sig = it < 4 ? 6 : 2.5, n = M - 1;
+          const A = new Float64Array(n * n), b = new Float64Array(n);
+          for (let k = 1; k < M; k++) { A[(k - 1) * n + (k - 1)] += 1e-4; b[k - 1] += 1e-4 * y[k]; }
+          for (const m of meas) {
+            if ((m.wrap && !useClosure) || !m.c.length) continue;
+            const pred = y[m.pb] - y[m.pa] + m.wrap;
+            let best = null;   // le candidat le plus probable : proche de la prédiction ET fiable
+            for (const c of m.c) { const r = wrapDeg(c.yaw - pred), v = c.w / (1 + (r / sig) * (r / sig)); if (!best || v > best.v) best = { r, c, v }; }
+            const w = best.v * (m.skip ? 0.6 : 1);
+            m.pick = best.c; m.res = best.r;
+            const t = pred + best.r - m.wrap;
+            const ia = m.pa - 1, ib = m.pb - 1;
+            if (ib >= 0) { A[ib * n + ib] += w; b[ib] += w * t; }
+            if (ia >= 0) { A[ia * n + ia] += w; b[ia] -= w * t; }
+            if (ia >= 0 && ib >= 0) { A[ia * n + ib] -= w; A[ib * n + ia] -= w; }
+          }
+          // l'ordre des screens est respecté : chaque screen est un peu plus à droite que le précédent
+          for (let k = 0; k + 1 < M; k++) {
+            if (dir * (y[k + 1] - y[k]) >= 2) continue;
+            const t = dir * Math.max(2, 0.4 * typical), ia = k - 1, ib = k, w = 1;
+            if (ib >= 0) { A[ib * n + ib] += w; b[ib] += w * t; }
+            if (ia >= 0) { A[ia * n + ia] += w; b[ia] -= w * t; }
+            if (ia >= 0 && ib >= 0) { A[ia * n + ib] -= w; A[ib * n + ia] -= w; }
+          }
+          const x = solveLinear(A, b, n);
+          if (!x) break;
+          for (let k = 1; k < M; k++) y[k] = x[k - 1];
+        }
+        return y;
+      };
+      const yOpen = solve(false, init);
+      const y = solve(true, yOpen);
+      sol = { y, meas };
+      for (const m of meas) if (m.pick && m.pick.d && Math.abs(m.res) < 6) m.pick.d.picked = true;
+      dbg.iters.push({ f, dir, init: init.map(v => Math.round(v * 10) / 10), y: y.map(v => Math.round(v * 10) / 10), yOpen: yOpen.map(v => Math.round(v * 10) / 10),
+        meas: meas.map(m => ({ a: ring[m.pa] + 1, b: ring[m.pb] + 1, skip: !!m.skip, res: m.res === undefined ? null : Math.round(m.res * 10) / 10, pick: m.pick ? m.pick.src + ':' + Math.round(m.pick.yaw * 10) / 10 : null, c: m.c.map(c => c.src[0] + Math.round(c.yaw * 10) / 10 + '/' + Math.round(c.w * 100) / 100) })) });
+      if (iter === 1) break;
+      // 6. affinage du zoom sur les screens les plus sûrs du tour
+      const rel = meas.filter(m => !m.skip && !m.wrap && m.pick && Math.abs(m.res) < 3 && m.pick.w >= 0.5).sort((a, b) => b.pick.w - a.pick.w).slice(0, 10);
+      await zoomSearch(rel.map(m => ({ a: ring[m.pa], b: ring[m.pb], yaw: y[m.pb] - y[m.pa], pitch: m.pick.d ? m.pick.d.q[1] : 0 })), false);
+      mark('zoom');
+      progress(0.85); await tick();
+    }
+    // 7. rotations initiales et liens retenus pour l'ajustement global
+    const { y, meas } = sol;
+    const pos = new Map(ring.map((c, k) => [c, k]));
+    ring.forEach((c, k) => { cams[c].R = makeYPR(y[k] * DEG, 0, 0); });
+    const used = [], seen = new Set();
+    for (const e of edges) {
+      if (e.direct || !pos.has(e.i) || !pos.has(e.j)) continue;
+      const q = ypr(relRotOf(e, f));
+      const pred = y[pos.get(e.j)] - y[pos.get(e.i)];
+      if (Math.abs(wrapDeg(q.yaw / DEG - pred)) < 4 && Math.abs(q.pitch) < 20 * DEG) { used.push(e); seen.add(Math.min(e.i, e.j) + '-' + Math.max(e.i, e.j)); }
+    }
+    for (const m of meas) {
+      if (!m.pick || m.pick.src !== 'direct' || Math.abs(m.res) > 4) continue;
+      const a = ring[m.pa], b = ring[m.pb], key = Math.min(a, b) + '-' + Math.max(a, b);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      used.push({ i: a, j: b, conf: 0.3 * m.pick.d.s, n: m.pick.d.pts.length / 4, H: null, pts: m.pick.d.pts, weak: true, direct: true });
+    }
+    return { ring, f, edges: used, yaw: y, dir };
+  }
+
   // ------------------------------------------------------------------ session
   async function prepare(files, opts) {
     opts = opts || {};
@@ -612,7 +1004,29 @@
     let f = fs.length ? fs[fs.length >> 1] : aw0 / 2;
     if (!(f > aw0 * 0.15 && f < aw0 * 4)) f = aw0 / 2;
 
-    // --- ensembles connectés ; les captures qui se suivent mais ne se relient pas par points
+    // --- tour ordonné (screens 1, 2, 3… en tournant vers la droite)
+    const ringCand = usable.filter(c => !forcedPole(c)).map(c => c.index);
+    progress('Placement du tour', 0); await tick();
+    let ringSol = null;
+    try { ringSol = await solveRing(S, ringCand, f, edges, p => progress('Placement du tour', p)); } catch (e) { ringSol = null; }
+    if (ringSol) {
+      f = ringSol.f;
+      const root = ringSol.ring[0];
+      for (const i of ringSol.ring) { S.cams[i].active = true; S.cams[i].aligned = true; }
+      progress('Ajustement global', 0.2); await tick();
+      const before = ringSol.ring.map(i => S.cams[i].R);
+      f = bundleAdjust(S.cams, ringSol.edges, f, root, 40);
+      // garde-fou : l'ajustement ne doit pas défaire l'ordre du tour
+      const yaws = ringSol.ring.map(i => Math.atan2(S.cams[i].R[2], S.cams[i].R[8]) / DEG);
+      let ok = true;
+      for (let k = 1; k < yaws.length; k++) if (Math.abs(wrapDeg(yaws[k] - ringSol.yaw[k])) > 8) ok = false;
+      if (!ok) { ringSol.ring.forEach((i, k) => { S.cams[i].R = before[k]; }); f = ringSol.f; }
+      S.ringOrder = ringSol.ring;
+      progress('Ajustement global', 1); await tick();
+      return finishPrepare(S, files, f, root, edges, rnd, progress);
+    }
+
+    // --- secours : ensembles connectés ; les captures qui se suivent mais ne se relient pas par points
     //     communs (murs unis) sont alignées directement par corrélation
     const components = () => {
       const adj = new Map(); S.cams.forEach(c => adj.set(c.index, []));
@@ -679,7 +1093,10 @@
     progress('Ajustement global', 0.2); await tick();
     f = bundleAdjust(S.cams, compEdges, f, root, 40);
     progress('Ajustement global', 1); await tick();
+    return finishPrepare(S, files, f, root, edges, rnd, progress);
+  }
 
+  async function finishPrepare(S, files, f, root, edges, rnd, progress) {
     // --- captures hors de l'ensemble : rattachement par points communs si possible
     const toPoles = [];
     for (const c of S.cams) {
@@ -937,6 +1354,7 @@
         await tick();
       }
     }
+    if (!best.p) { cam.aligned = false; cam.active = false; cam.poleScore = -1; progress(1); return; }
     // affinage : la caméra a pu bouger un peu (modèle « plan du sol/plafond »)
     // grille de départs sur le décalage horizontal, puis affinage complet
     const capP = T.capPixels(T.panos[1024], best.side), capQ = T.capPixels(T.panos[512], best.side);
@@ -1258,5 +1676,5 @@
     });
   }
 
-  global.Stitcher = { prepare, renderEquirect, adjustPole, setPoleRole, summary, _scorePole: scorePole, _poleTools: poleTools, _match: matchFeatures, _ransac: ransacHomography, _nm: nelderMead, _rod: rodrigues, _mul: mul3, _T: T3 };
+  global.Stitcher = { _alignPair: alignPair, _refinePair: refinePair, prepare, renderEquirect, adjustPole, setPoleRole, summary, _scorePole: scorePole, _poleTools: poleTools, _match: matchFeatures, _ransac: ransacHomography, _nm: nelderMead, _rod: rodrigues, _mul: mul3, _T: T3 };
 })(typeof window !== 'undefined' ? window : self);
