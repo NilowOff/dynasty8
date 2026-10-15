@@ -166,11 +166,11 @@ body.visit-open .hero-pano { animation-play-state: paused; }
 /* ---------- catalogue ---------- */
 .catalog { max-width: 1240px; margin: 0 auto; padding: 40px var(--gutter) 72px; scroll-margin-top: 60px; }
 .cat-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.cat-head h1, .cat-head h2 {
+.cat-head h1, .cat-head h2, .deco-profile h1 {
   margin: 0; font-family: var(--display); font-stretch: var(--wide); font-weight: 800;
   font-size: clamp(26px, 3.2vw, 36px); line-height: 1.05; letter-spacing: -.01em;
 }
-.cat-head .sub { margin: 6px 0 0; color: var(--ink-2); font-size: 16px; }
+.cat-head .sub, .deco-profile .sub { margin: 6px 0 0; color: var(--ink-2); font-size: 16px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 22px 0 26px; }
 .chip {
   border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 15px;
@@ -454,7 +454,17 @@ button.day:hover { border-color: var(--ink-3); }
 @media (max-width: 420px) { .profile { flex-direction: column; text-align: center; } .profile .btns { justify-content: center; } }
 .crop { position: relative; width: min(300px, 100%); aspect-ratio: 1; margin: 4px auto 0; border-radius: 12px; overflow: hidden; background: #0d1410; touch-action: none; }
 .crop::after { content: ''; position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 600px rgba(13, 20, 16, .62); border: 2px solid rgba(255,255,255,.85); pointer-events: none; }
+.crop.wide::after { border-radius: 12px; box-shadow: none; border: 2px solid rgba(255,255,255,.7); }
 .crop-cv { display: block; width: 100%; height: 100%; cursor: grab; }
+.bannerprev {
+  aspect-ratio: 16 / 7; border-radius: 12px; border: 1px solid var(--line); background: var(--paper) center / cover no-repeat;
+  display: flex; align-items: flex-end; padding: 8px;
+}
+.bannerprev.empty { background: radial-gradient(120% 160% at 100% 0%, rgba(253, 198, 20, .3), transparent 55%), linear-gradient(135deg, var(--green), var(--green-deep)); }
+.bannerprev small { background: rgba(13, 20, 16, .72); color: var(--white); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.bannerprev + .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.bannerprev + .btns .btn { min-height: 38px; }
+.bannerprev + .btns svg { width: 18px; height: 18px; }
 .crop-cv.dragging { cursor: grabbing; }
 .crop-cv:focus-visible { outline: 3px solid var(--sun); outline-offset: -3px; }
 .crop-zoom { display: flex; align-items: center; gap: 12px; width: min(300px, 100%); margin: 0 auto; font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 15px; }
@@ -481,6 +491,19 @@ button.day:hover { border-color: var(--ink-3); }
 .deco-id { display: flex; align-items: center; gap: 20px; }
 .deco-id .avatar.xl { box-shadow: 0 0 0 4px var(--card), 0 10px 24px -10px rgba(0,0,0,.4); }
 @media (max-width: 520px) { .deco-id { gap: 14px; } .deco-id .avatar.xl { width: 72px; height: 72px; font-size: 26px; } }
+/* en-tête de la catégorie d'un décorateur : image de fond + photo */
+.deco-profile .banner { width: 100%; aspect-ratio: 16 / 5.5; max-height: 360px; border-radius: var(--radius); background: var(--card) center 35% / cover no-repeat; }
+.deco-profile .banner.empty { background: radial-gradient(120% 160% at 100% 0%, rgba(253, 198, 20, .3), transparent 55%), linear-gradient(135deg, var(--green), var(--green-deep)); }
+.deco-profile .deco-id { align-items: flex-start; margin-top: -60px; padding: 0 24px; }
+.deco-profile .deco-id > div:last-child { padding-top: 70px; min-width: 0; }
+.deco-profile .deco-id h1 { overflow-wrap: anywhere; }
+.deco-profile .avatar.xl { width: 124px; height: 124px; font-size: 44px; box-shadow: 0 0 0 5px var(--paper), 0 10px 26px -10px rgba(0,0,0,.45); }
+@media (max-width: 640px) {
+  .deco-profile .banner { aspect-ratio: 16 / 7; }
+  .deco-profile .deco-id { margin-top: -44px; padding: 0 10px; gap: 14px; }
+  .deco-profile .deco-id > div:last-child { padding-top: 50px; }
+  .deco-profile .avatar.xl { width: 88px; height: 88px; font-size: 32px; }
+}
 
 /* avis */
 .avis-layout { display: grid; grid-template-columns: minmax(0, 370px) minmax(0, 1fr); gap: 26px; align-items: start; }
@@ -586,6 +609,15 @@ button.day:hover { border-color: var(--ink-3); }
 .vpaper .price.range { font-size: 18px; white-space: normal; }
 .vpaper .btn { min-height: 32px; padding: 0 14px; font-size: 15px; }
 .vpaper .opt { font-size: 14px; margin: 0; }
+/* décoration ↔ intérieur du catalogue sans déco */
+.decoswitch { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 8px; padding: 3px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); }
+.decoswitch button {
+  border: 0; border-radius: 999px; padding: 7px 8px; background: transparent; color: var(--ink-2); cursor: pointer;
+  font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 14px; white-space: nowrap; transition: background .2s, color .2s, box-shadow .2s;
+}
+.decoswitch button[aria-pressed="true"] { background: var(--green); color: var(--white); box-shadow: 0 2px 8px rgba(1, 61, 36, .3); cursor: default; }
+.decoswitch button[aria-pressed="false"]:hover { background: var(--card); color: var(--ink); }
+.decoswitch button:focus-visible { outline: 3px solid var(--sun); outline-offset: 1px; }
 
 .vcontrols { position: absolute; z-index: 5; top: calc(env(safe-area-inset-top, 0px) + var(--gutter)); right: calc(env(safe-area-inset-right, 0px) + var(--gutter)); display: flex; gap: 8px; }
 .rbtn {
@@ -887,6 +919,10 @@ button.day:hover { border-color: var(--ink-3); }
           <button class="btn" id="infoBtn" type="button">Infos</button>
         </div>
         <p class="opt" id="vOption" hidden></p>
+        <div class="decoswitch" id="vDeco" role="group" aria-label="Décoration" hidden>
+          <button type="button" id="vWithDeco" aria-pressed="true">Avec la déco</button>
+          <button type="button" id="vNoDeco" aria-pressed="false">Sans la déco</button>
+        </div>
       </div>
     </div>
   </div>

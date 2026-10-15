@@ -197,21 +197,35 @@
         this.view.vYaw = this.view.vPitch = 0;
       });
     }
+    // même endroit, autre image (avec / sans la déco) : fondu enchaîné sans bouger la vue
+    crossfade(tex, delta) {
+      return new Promise(resolve => {
+        this.fadeSphere.material.map = tex; this.fadeSphere.material.needsUpdate = true;
+        this.fadeSphere.material.opacity = 0;
+        this.fadeSphere.rotation.y = (delta || 0) * D2R;
+        this.fadeSphere.visible = true;
+        this.anim = { t0: performance.now(), dur: this.reduceMotion ? 1 : 700, still: true, tex, delta: delta || 0, resolve };
+        this.view.vYaw = this.view.vPitch = 0;
+      });
+    }
     _stepAnim(now) {
       const a = this.anim, t = Math.min(1, (now - a.t0) / a.dur);
-      const turn = ease(Math.min(1, t / 0.55));
-      this.view.yaw = a.yaw0 + a.dYaw * turn;
-      this.view.pitch = a.pitch0 + (-6 - a.pitch0) * turn;
-      const push = ease(Math.max(0, (t - 0.25) / 0.75));
-      this.view.fov = a.fov0 * (1 - 0.3 * push);
-      this.fadeSphere.material.opacity = Math.max(0, Math.min(1, (t - 0.35) / 0.55));
+      if (a.still) this.fadeSphere.material.opacity = ease(t);
+      else {
+        const turn = ease(Math.min(1, t / 0.55));
+        this.view.yaw = a.yaw0 + a.dYaw * turn;
+        this.view.pitch = a.pitch0 + (-6 - a.pitch0) * turn;
+        const push = ease(Math.max(0, (t - 0.25) / 0.75));
+        this.view.fov = a.fov0 * (1 - 0.3 * push);
+        this.fadeSphere.material.opacity = Math.max(0, Math.min(1, (t - 0.35) / 0.55));
+      }
       if (t >= 1) {
         this.setTexture(a.tex);
         this.view.yaw += a.delta;
         this.fadeSphere.visible = false;
         this.fadeSphere.material.opacity = 0;
         this.anim = null;
-        this.settle = { t0: now, fov0: this.view.fov };
+        if (!a.still) this.settle = { t0: now, fov0: this.view.fov };
         a.resolve();
       }
     }

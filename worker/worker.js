@@ -74,7 +74,7 @@ async function route(request, env, ctx) {
   const me = await auth(request, env);
   if (path === '/api/me' && m === 'GET') return json({ user: publicUser(me) });
   if (path === '/api/password' && m === 'POST') return changeOwnPassword(request, env, me);
-  if (path === '/api/me/photo' && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, me.username, m === 'DELETE');
+  if ((path === '/api/me/photo' || path === '/api/me/banner') && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, me.username, m === 'DELETE', path.endsWith('banner') ? 'banner' : 'photo');
   if (path.startsWith('/api/media/') && m === 'PUT') return putMedia(request, env, me, path.slice('/api/'.length));
   if (path === '/api/save' && m === 'POST') return save(request, env, me);
   if (path.startsWith('/api/reviews/') && m === 'DELETE') {
@@ -96,7 +96,7 @@ async function route(request, env, ctx) {
     const name = path === '/api/staff' ? '' : decodeURIComponent(rest[0] || '');
     if (path === '/api/staff' && m === 'GET') return listStaff(env);
     if (path === '/api/staff' && m === 'POST') return createStaff(request, env, me);
-    if (name && rest[1] === 'photo' && rest.length === 2 && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, name, m === 'DELETE');
+    if (name && (rest[1] === 'photo' || rest[1] === 'banner') && rest.length === 2 && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, name, m === 'DELETE', rest[1]);
     if (name && rest.length === 1 && m === 'PATCH') return updateStaff(request, env, me, name);
     if (name && rest.length === 1 && m === 'DELETE') return deleteStaff(env, me, name);
   }
@@ -152,6 +152,7 @@ async function save(request, env, me) {
   let next = merge3(base, mine, cur);
   sanitize(next, false);
   stampAuthors(cur, next, me);
+  checkBases(cur, next);
   if (me.role === 'gerant') checkGerant(cur, next, me);
   else if (me.role === 'decorateur') checkDecorateur(cur, next, me);
   const staffNow = await getStaff(env);
@@ -224,7 +225,8 @@ function describeChanges(cur, next) {
   const out = [], q = s => '« ' + (s || 'Sans nom') + ' »';
   const curL = new Map(cur.listings.map(l => [l.id, l])), nextL = new Map(next.listings.map(l => [l.id, l]));
   const noun = l => l.deco ? 'la décoration ' : 'le bien ';
-  next.listings.forEach(l => { if (!curL.has(l.id)) out.push('a créé ' + noun(l) + q(l.name) + (l.points.length ? ' (' + l.points.length + (l.points.length > 1 ? ' pièces)' : ' pièce)') : '')); });
+  const baseName = l => { const b = l.deco && l.base && nextL.get(l.base); return b ? ' dans ' + q(b.name) : ''; };
+  next.listings.forEach(l => { if (!curL.has(l.id)) out.push('a créé ' + noun(l) + q(l.name) + baseName(l) + (l.points.length ? ' (' + l.points.length + (l.points.length > 1 ? ' pièces)' : ' pièce)') : '')); });
   cur.listings.forEach(l => { if (!nextL.has(l.id)) out.push('a supprimé ' + noun(l) + q(l.name)); });
   next.listings.forEach(l => {
     const c = curL.get(l.id); if (!c) return;
@@ -235,7 +237,8 @@ function describeChanges(cur, next) {
     if (c.status !== l.status) out.push('a passé ' + q(l.name) + ' en « ' + (STATUS_NAMES[l.status] || l.status) + ' »');
     if (c.start && c.start !== l.start && np.has(l.start)) out.push('a choisi « ' + np.get(l.start).name + ' » comme pièce de départ de ' + q(l.name));
     if (c.cover && c.cover !== l.cover) out.push('a changé la photo de couverture de ' + q(l.name));
-    const strip = x => { const { points, price, priceMax, status, start, cover, ...r } = x; return r; };
+    if (l.deco && l.base && c.base !== l.base) out.push('a placé la décoration ' + q(l.name) + baseName(l));
+    const strip = x => { const { points, price, priceMax, status, start, cover, base, ...r } = x; return r; };
     if (!eq(strip(c), strip(l))) out.push('a modifié les infos de ' + q(l.name));
     const edited = l.points.filter(p => cp.has(p.id) && !eq(p, cp.get(p.id)));
     if (edited.length) out.push('a modifié la visite de ' + q(l.name) + ' (' + edited.map(p => p.name).join(', ') + ')');
@@ -350,6 +353,7 @@ function sanitize(d, lenient) {
     l.features = Array.isArray(l.features) ? l.features.map(f => str(f, 80)).filter(Boolean).slice(0, 30) : [];
     l.cover = imgPath(l.cover); l.order = isFinite(+l.order) ? +l.order : 0; l.created = str(l.created, 30);
     if (typeof l.deco === 'string' && /^[a-z0-9]{1,20}$/.test(l.deco)) { /* décoration d'un décorateur */ } else delete l.deco;
+    if (typeof l.base === 'string' && ID_RE.test(l.base)) { /* intérieur du catalogue où la décoration a été faite */ } else delete l.base;
     if (l.createdBy !== undefined) l.createdBy = str(l.createdBy, 24);
     const pids = new Set();
     l.points = (Array.isArray(l.points) ? l.points : []).filter(p => {
@@ -367,7 +371,7 @@ function sanitize(d, lenient) {
     });
     if (l.start !== null && !pids.has(l.start)) l.start = l.points[0] ? l.points[0].id : null;
   });
-  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => decoEntry(x.id, str(x.name, 40), x.photo));
+  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => decoEntry(x.id, str(x.name, 40), x.photo, x.banner));
   if (d.site !== undefined) d.site = sanitizeSite(d.site);
   if (d.site === undefined) delete d.site;
 }
@@ -460,18 +464,37 @@ function checkDecorateur(cur, next, me) {
     if (!nl || !eq(cl, nl)) deny('Un décorateur ne peut modifier que ses propres décorations (« ' + (cl.name || cl.id) + ' »).');
   }
 }
+// chaque décoration est faite dans un intérieur du catalogue (bouton « Sans la déco » pendant la visite) :
+// sans cet intérieur, on ne peut pas créer de pièce dans la décoration
+function checkBases(cur, next) {
+  const curL = new Map(cur.listings.map(l => [l.id, l]));
+  const catalogue = new Set(next.listings.filter(l => !l.deco).map(l => l.id));
+  next.listings.forEach(l => {
+    if (!l.deco) { delete l.base; return; }
+    if (l.base === l.id) delete l.base;
+    const before = new Set(((curL.get(l.id) || {}).points || []).map(p => p.id));
+    if (l.points.some(p => !before.has(p.id)) && !catalogue.has(l.base)) bad('Choisis d’abord l’intérieur du catalogue de la décoration « ' + (l.name || 'Sans nom') + ' » : sans lui, on ne peut pas créer ses pièces.');
+  });
+}
 // catégories « Décorateurs » : un compte décorateur = une catégorie ; celle d'un compte supprimé reste tant qu'elle contient des décorations
-const decoEntry = (id, name, photo) => (typeof photo === 'string' && PHOTO_RE.test(photo)) ? { id, name, photo } : { id, name };
+const okPhoto = v => typeof v === 'string' && PHOTO_RE.test(v);
+function decoEntry(id, name, photo, banner) {
+  const x = { id, name };
+  if (okPhoto(photo)) x.photo = photo;
+  if (okPhoto(banner)) x.banner = banner;   // image de fond de la carte du décorateur
+  return x;
+}
 function computeDecorators(staff, data, prev) {
-  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo));
+  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo, u.banner));
   const ids = new Set(list.map(x => x.id));
-  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo)); ids.add(x.id); } });
+  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo, x.banner)); ids.add(x.id); } });
   return list.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
-// photos de profil qui ne servent plus : ni à un compte, ni à une catégorie de décorateur
+// photos de profil et images de fond qui ne servent plus : ni à un compte, ni à une catégorie de décorateur
+const imagesOf = x => [x.photo, x.banner].filter(Boolean);
 function lostPhotos(before, after, staff) {
-  const keep = new Set(Object.values(staff.users).map(u => u.photo).concat((after || []).map(x => x.photo)).filter(Boolean));
-  return (before || []).map(x => x.photo).filter(p => p && PHOTO_RE.test(p) && !keep.has(p));
+  const keep = new Set(Object.values(staff.users).flatMap(imagesOf).concat((after || []).flatMap(imagesOf)));
+  return (before || []).flatMap(imagesOf).filter(p => PHOTO_RE.test(p) && !keep.has(p));
 }
 async function syncDecorators(env, staff) {
   const txt = await env.DB.get('data');
@@ -530,7 +553,7 @@ async function getStaff(env) {
   return staff;
 }
 const putStaff = (env, s) => env.DB.put('staff', JSON.stringify(s));
-const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null });
+const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null, banner: u.banner || null });
 
 const enc = new TextEncoder();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -647,13 +670,14 @@ async function changeOwnPassword(request, env, me) {
   const nu = await makeUser(me.username, body.password, me.role, me.name);
   nu.created = me.created; nu.uid = me.uid; nu.v = (me.v || 1) + 1;
   if (me.photo) nu.photo = me.photo;
+  if (me.banner) nu.banner = me.banner;
   staff.users[me.username] = nu;
   await putStaff(env, staff);
   return json(await issueSession(env, nu));
 }
 async function listStaff(env) {
   const staff = await getStaff(env);
-  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
+  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, banner: u.banner || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
 async function createStaff(request, env, me) {
   const body = await readJson(request);
@@ -699,19 +723,23 @@ async function deleteStaff(env, me, name) {
   if (name === me.username) bad('Tu ne peux pas supprimer ton propre compte.');
   const staff = await getStaff(env);
   if (!staff.users[name]) throw new HttpError(404, 'not_found', 'Compte introuvable.');
-  const photo = staff.users[name].photo;
+  const imgs = imagesOf(staff.users[name]);
   delete staff.users[name];
   await putStaff(env, staff);
   const decos = await syncDecorators(env, staff);
-  // la photo reste tant que la catégorie du décorateur existe (elle contient encore des décorations)
-  if (photo && !decos.some(x => x.photo === photo)) await env.DB.delete(photo);
+  // la photo et l'image de fond restent tant que la catégorie du décorateur existe (elle contient encore des décorations)
+  const kept = new Set(decos.flatMap(imagesOf));
+  await Promise.all(imgs.filter(k => !kept.has(k)).map(k => env.DB.delete(k)));
   await addLog(env, me.username, ['a supprimé le compte de ' + name]);
   return listStaff(env);
 }
 
-// photo de profil : chacun change la sienne, un admin peut changer celle de n'importe quel compte
-async function setPhoto(request, env, me, name, remove) {
-  if (name !== me.username && me.role !== 'admin') deny('Seul un admin peut changer la photo d’un autre compte.');
+// photo de profil (kind « photo ») ou image de fond de la carte d'un décorateur (kind « banner ») :
+// chacun change la sienne, un admin peut changer celle de n'importe quel compte
+async function setPhoto(request, env, me, name, remove, kind) {
+  kind = kind === 'banner' ? 'banner' : 'photo';
+  const what = kind === 'banner' ? 'l’image de fond' : 'la photo de profil';
+  if (name !== me.username && me.role !== 'admin') deny('Seul un admin peut changer ' + what + ' d’un autre compte.');
   let buf = null;
   if (!remove) {
     if (!/^image\/jpeg/i.test(request.headers.get('Content-Type') || '')) bad('Seules les images JPEG sont acceptées.');
@@ -724,17 +752,18 @@ async function setPhoto(request, env, me, name, remove) {
   const staff = await getStaff(env);
   const u = staff.users[name];
   if (!u) throw new HttpError(404, 'not_found', 'Compte introuvable.');
-  const old = u.photo || null;
+  if (kind === 'banner' && !remove && u.role !== 'decorateur') bad('Seuls les décorateurs ont une image de fond.');
+  const old = u[kind] || null;
   if (remove) {
     if (!old) return json({ ok: true, user: publicUser(u) });
-    delete u.photo;
+    delete u[kind];
   } else {
-    u.photo = 'media/staff/' + u.uid + '-' + rid(6) + '.jpg';
-    await env.DB.put(u.photo, buf, { metadata: { by: me.username, at: Date.now() } });
+    u[kind] = 'media/staff/' + u.uid + (kind === 'banner' ? '-b-' : '-') + rid(6) + '.jpg';
+    await env.DB.put(u[kind], buf, { metadata: { by: me.username, at: Date.now() } });
   }
   await putStaff(env, staff);
   const decos = await syncDecorators(env, staff);
-  if (old && !decos.some(x => x.photo === old)) await env.DB.delete(old);
-  if (name !== me.username) await addLog(env, me.username, [(remove ? 'a retiré la photo de profil de ' : 'a changé la photo de profil de ') + name]);
+  if (old && !decos.some(x => imagesOf(x).includes(old))) await env.DB.delete(old);
+  if (name !== me.username) await addLog(env, me.username, [(remove ? 'a retiré ' : 'a changé ') + what + ' de ' + name]);
   return json({ ok: true, user: publicUser(u) });
 }
