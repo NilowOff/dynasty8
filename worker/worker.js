@@ -36,9 +36,23 @@ function json(obj, status, extra) {
   return new Response(JSON.stringify(obj), { status: status || 200, headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...(extra || {}) } });
 }
 
+// limite simple par adresse IP : protège contre quelqu'un qui bombarde le serveur depuis sa machine
+const hits = new Map();
+function tooMany(request) {
+  const ip = request.headers.get('CF-Connecting-IP') || '', now = Date.now();
+  const write = request.method !== 'GET' && request.method !== 'HEAD';
+  const key = (write ? 'w|' : 'r|') + ip, max = write ? 60 : 300;   // par minute
+  let h = hits.get(key);
+  if (!h || now - h.t > 60000) { h = { t: now, n: 0 }; hits.set(key, h); }
+  h.n++;
+  if (hits.size > 10000) hits.clear();
+  return h.n > max;
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+    if (tooMany(request)) return json({ error: 'throttled', message: 'Trop de requêtes. Réessaie dans une minute.' }, 429, { 'Retry-After': '60' });
     try {
       return await route(request, env, ctx);
     } catch (e) {
@@ -88,7 +102,7 @@ async function route(request, env, ctx) {
     const rest = path.slice('/api/trash/'.length).split('/');
     const id = decodeURIComponent(rest[0] || '');
     if (id && rest[1] === 'restore' && m === 'POST') return restoreTrash(env, me, id);
-    if (id && rest.length === 1 && m === 'DELETE') return purgeTrash(env, me, id);
+    if (id && rest.length === 1 && m === 'DELETE') deny('Un bien supprimé ne peut pas être effacé : il reste dans l’Historique, restaurable à tout moment.');
   }
   if (path === '/api/staff' || path.startsWith('/api/staff/')) {
     if (me.role !== 'admin') deny('Seul un admin peut gérer les comptes.');
@@ -278,19 +292,6 @@ async function restoreTrash(env, me, id) {
   await env.DB.put('trash', JSON.stringify(trash));
   await addLog(env, me.username, ['a restauré le bien « ' + (l.name || 'Sans nom') + ' »']);
   return json({ ok: true, listing: cur.listings.find(x => x.id === l.id) });
-}
-async function purgeTrash(env, me, id) {
-  const trash = await getJSON(env, 'trash', []);
-  const i = trash.findIndex(t => t.id === id);
-  if (i < 0) throw new HttpError(404, 'not_found', 'Ce bien n’est plus dans l’historique.');
-  const [entry] = trash.splice(i, 1);
-  const cur = await currentData(env);
-  sanitize(cur, true);
-  const used = usedMedia(cur, trash);
-  await env.DB.put('trash', JSON.stringify(trash));
-  await Promise.all(mediaOfListing(entry.listing).filter(x => !used.has(x)).map(x => env.DB.delete(x)));
-  await addLog(env, me.username, ['a supprimé définitivement le bien « ' + (entry.listing.name || 'Sans nom') + ' »']);
-  return listTrash(env);
 }
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -515,14 +516,19 @@ async function postReview(request, env) {
   const body = await readJson(request);
   const reviews = await getJSON(env, 'reviews', []);
   if (body.website) return json({ ok: true, items: reviews });   // champ piège rempli par les robots
+  if (typeof body.t === 'number' && body.t < 3000) return json({ ok: true, items: reviews });   // formulaire rempli en moins de 3 s : robot
   const clean = (v, n) => String(v || '').replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, n);
   const name = clean(body.name, 60).replace(/\n/g, ' '), text = clean(body.text, 1000), stars = Math.round(+body.stars);
   if (name.length < 2) bad('Indique ton nom et ton prénom.');
   if (!(stars >= 1 && stars <= 5)) bad('Choisis une note de 1 à 5 étoiles.');
   if (text.length < 5) bad('Écris quelques mots sur ton expérience.');
+  if (/https?:\/\/|www\.|discord\.gg/i.test(name + ' ' + text)) bad('Les liens ne sont pas autorisés dans les avis.');
+  const same = v => String(v || '').toLowerCase().replace(/[^a-z0-9à-ÿ]+/g, ' ').trim();
+  if (reviews.some(r => same(r.text) === same(text))) bad('Cet avis a déjà été publié.');
   const ip = request.headers.get('CF-Connecting-IP') || '', now = Date.now();
   const recent = (reviewHits.get(ip) || []).filter(t => now - t < 3600 * 1000);
   if (recent.length >= 3) throw new HttpError(429, 'throttled', 'Tu as déjà publié plusieurs avis récemment. Réessaie plus tard.');
+  if (reviews.some(r => same(r.name) === same(name) && now - Date.parse(r.at) < 24 * 3600 * 1000)) throw new HttpError(429, 'throttled', 'Tu as déjà publié un avis aujourd’hui. Merci !');
   const today = new Date(now).toISOString().slice(0, 10);
   if (reviews.filter(r => String(r.at).slice(0, 10) === today).length >= 100) throw new HttpError(429, 'throttled', 'Trop d’avis aujourd’hui. Réessaie demain.');
   recent.push(now); reviewHits.set(ip, recent); if (reviewHits.size > 5000) reviewHits.clear();

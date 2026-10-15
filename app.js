@@ -1093,7 +1093,6 @@
       }
       applyPoint(p);
       $('vStatus').hidden = true;
-      l.points.forEach(q => { if (q !== p) panoLoadTexture(texURL(q), v.renderer).catch(() => { }); });
     } catch (e) {
       $('vStatus').textContent = 'L’image de cette pièce n’a pas pu se charger.';
     }
@@ -1161,6 +1160,8 @@
     buildPins(); buildLinks(); orientBadge();
     refreshTools();
     preloadTwin();
+    // pièces reliées par un passage : chargées à l'avance (pas tout le bien, pour économiser le quota du serveur)
+    p.links.forEach(k => { const q = pointOf(visit.listing, k.target); if (q) panoLoadTexture(texURL(q), visit.viewer.renderer).catch(() => { }); });
   }
   // outils visibles selon les droits sur la pièce affichée
   function refreshTools() {
@@ -1829,7 +1830,7 @@
     const err = el('p', { class: 'note error', hidden: true });
     openSheet('Historique', [
       el('h4', { class: 'subhead', text: 'Biens supprimés' }),
-      el('p', { class: 'help', text: 'Un bien supprimé reste ici avec toutes ses pièces et ses images, jusqu’à ce que tu le restaures ou que tu le supprimes définitivement.' }),
+      el('p', { class: 'help', text: 'Un bien supprimé reste ici pour toujours, avec toutes ses pièces et ses images : il ne peut pas être effacé, seulement restauré.' }),
       trashBox, err,
       el('h4', { class: 'subhead', text: 'Dernières modifications' }),
       logBox
@@ -1846,14 +1847,7 @@
             el('small', { text: 'Supprimé le ' + whenText(t.deletedAt) + ' par ' + t.deletedBy })
           ]),
           el('div', { class: 'trashacts' }, [
-            el('button', { type: 'button', class: 'btn primary', text: 'Restaurer', onclick: e => restoreListing(t, e.currentTarget) }),
-            el('button', {
-              type: 'button', class: 'btn danger', text: 'Supprimer définitivement', onclick: async () => {
-                if (!(await confirmBox('Supprimer définitivement « ' + t.name + ' » ?', 'Le bien, ses pièces et ses images seront effacés pour de bon. Impossible de revenir en arrière.', 'Supprimer définitivement'))) return;
-                try { drawTrash((await api('DELETE', '/api/trash/' + encodeURIComponent(t.id))).items); toast('« ' + t.name + ' » a été supprimé définitivement.'); loadLog(); }
-                catch (x) { err.textContent = x.message; err.hidden = false; }
-              }
-            })
+            el('button', { type: 'button', class: 'btn primary', text: 'Restaurer', onclick: e => restoreListing(t, e.currentTarget) })
           ])
         ]);
       }));
@@ -2275,6 +2269,7 @@
     });
     const msg = el('p', { class: 'note error', hidden: true });
     const send = el('button', { type: 'submit', class: 'btn primary', id: 'rvSend', text: 'Publier mon avis' });
+    const shownAt = Date.now();
     const form = el('form', { class: 'avis-form', novalidate: true }, [
       el('h2', { text: 'Donner mon avis' }),
       field('Nom et prénom', nameIn),
@@ -2290,7 +2285,7 @@
       if (textIn.value.trim().length < 5) { msg.textContent = 'Écrivez quelques mots sur votre expérience.'; msg.hidden = false; textIn.focus(); return; }
       send.disabled = true;
       try {
-        reviews = (await api('POST', '/api/reviews', { name: nameIn.value.trim(), stars, text: textIn.value.trim(), website: trap.value })).items;
+        reviews = (await api('POST', '/api/reviews', { name: nameIn.value.trim(), stars, text: textIn.value.trim(), website: trap.value, t: Date.now() - shownAt })).items;
         renderAvis();
         toast('Merci ! Votre avis est publié.', 4500);
       } catch (x) { msg.textContent = x.message; msg.hidden = false; send.disabled = false; }
