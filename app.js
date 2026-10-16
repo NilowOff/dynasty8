@@ -2510,5 +2510,6 @@
   })();
 
   // pour les tests
-  window.__d8 = { state, save, go, openWizard, visit };
+  // (aussi utilisé par la présentation animée, intro.js)
+  window.__d8 = { state, save, go, openWizard, visit, media: mediaURL, price: priceParts, kind: kindOf, hero: () => heroPick };
 })();
