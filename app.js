@@ -865,9 +865,12 @@
     $('empty').textContent = f.type !== 'all' && !f.q && f.deal === 'all' ? 'Aucun bien dans cette catégorie pour le moment.' : 'Aucun bien ne correspond à ces critères.';
   }
   function cardOf(l) {
-    const photo = el('div', { class: 'photo', style: l.cover ? { backgroundImage: 'url("' + mediaURL(l.cover) + '")' } : {} }, [
+    // la description du bien, posée sur le bas de la photo (en entier au survol)
+    const desc = String(l.description || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+    const photo = el('div', { class: 'photo' + (desc ? ' has-desc' : ''), style: l.cover ? { backgroundImage: 'url("' + mediaURL(l.cover) + '")' } : {} }, [
       l.deco ? null : el('span', { class: 'status ' + l.status, text: STATUSES[l.status] || 'Disponible' }),
-      l.points.length ? el('span', { class: 'sunbadge' }, ['360°', el('small', { text: l.points.length + (l.points.length > 1 ? ' pièces' : ' pièce') })]) : null
+      l.points.length ? el('span', { class: 'sunbadge' }, ['360°', el('small', { text: l.points.length + (l.points.length > 1 ? ' pièces' : ' pièce') })]) : null,
+      desc ? el('p', { class: 'pdesc', text: desc }) : null
     ]);
     const body = el('div', { class: 'body' }, [
       el('p', { class: 'eyebrow', text: kindOf(l) }),
