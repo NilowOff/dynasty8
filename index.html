@@ -558,6 +558,22 @@ button.day:hover { border-color: var(--ink-3); }
 .decocard small { color: var(--ink-2); font-size: 15px; }
 .decocard .go { margin-top: 10px; font-family: var(--label); font-stretch: var(--narrow); font-weight: 750; font-size: 15px; color: var(--accent); }
 .decocard .go::after { content: ' →'; transition: margin .2s; }
+/* le numéro du décorateur, sous sa carte : un clic le copie */
+.decoitem { display: grid; grid-template-rows: 1fr auto; gap: 10px; }
+.decophone {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 0 16px 0 9px; text-align: left;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+  transition: border-color .15s, background .15s;
+}
+.decophone:hover { border-color: var(--ink-3); }
+.decophone:active { background: var(--hover); }
+.decophone .ico { width: 30px; height: 30px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--green-soft); color: var(--accent); }
+.decophone .ico svg { width: 16px; height: 16px; }
+.decophone .num { flex: 1; min-width: 0; font-family: var(--display); font-stretch: 112%; font-weight: 750; font-size: 18px; letter-spacing: .01em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decophone .copy { font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 14px; color: var(--accent); }
+.decophone.inline { width: auto; display: inline-flex; min-height: 40px; margin-top: 10px; padding: 0 14px 0 5px; border-radius: 999px; }
+.decophone.inline .num { font-size: 16px; }
+.phoneblock .phonerow { display: flex; gap: 8px; margin: -4px 0 4px; }
 .decocard:hover .go::after { margin-left: 4px; }
 .deco-id { display: flex; align-items: center; gap: 20px; }
 .deco-id .avatar.xl { box-shadow: 0 0 0 4px var(--card), 0 10px 24px -10px rgba(0,0,0,.4); }
@@ -1248,10 +1264,10 @@ html.intro-pending body::after { content: ''; position: fixed; inset: 0; z-index
 <div class="modal" id="modal" hidden><div class="box"><h3 id="modalTitle"></h3><p id="modalText"></p><div class="acts" id="modalActs"></div></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="stitcher.js?v=20261016d"></script>
-<script src="viewer.js?v=20261016d"></script>
-<script src="app.js?v=20261016d"></script>
-<script src="intro.js?v=20261016d"></script>
+<script src="stitcher.js?v=20261017a"></script>
+<script src="viewer.js?v=20261017a"></script>
+<script src="app.js?v=20261017a"></script>
+<script src="intro.js?v=20261017a"></script>
 
 </body>
 </html>

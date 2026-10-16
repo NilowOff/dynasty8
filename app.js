@@ -66,6 +66,7 @@
     return n;
   }
   const ICON = {
+    phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2Z"/></svg>',
     pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
@@ -549,6 +550,12 @@
       u.role === 'decorateur' ? bannerBlock(decoBanner({ id: u.uid, banner: u.banner }), !!u.banner, 'Elle s’affiche derrière ta photo sur ta carte dans « Décorateurs » et en haut de ta catégorie.',
         () => choosePhoto(async blob => afterPhoto(await api('PUT', '/api/me/banner', blob, 'image/jpeg')), openAccountSheet, 'Image de fond de ma carte', 'banner'),
         async () => afterPhoto(await api('DELETE', '/api/me/banner'))) : null,
+      u.role === 'decorateur' ? phoneBlock(u.phone, async phone => {
+        const r = await api('PATCH', '/api/me', { phone });
+        useSession({ token: state.session, user: r.user });
+        refreshData();
+        return r.user.phone;
+      }, 'Il s’affiche sous ta carte dans « Décorateurs » et en haut de ta catégorie, pour que les clients puissent t’appeler en jeu.') : null,
       el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: ROLE_NAMES[u.role] })])]),
       el('p', { class: 'help', text: ROLE_HELP[u.role] || '' }),
       el('h4', { class: 'subhead', text: 'Changer mon mot de passe' }),
@@ -614,8 +621,9 @@
   }
   function openResetSheet(u, draft) {
     const nn = el('input', { id: 'editName', value: draft ? draft.name : (u.name || u.username), maxlength: 40 });
+    const nph = el('input', { id: 'editPhone', type: 'tel', inputmode: 'tel', maxlength: 24, autocomplete: 'off', placeholder: 'ex. 555-0142', value: draft ? draft.phone : (u.phone || '') });
     const np = el('input', { id: 'resetPass', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Laisse vide pour ne pas le changer', value: draft ? draft.pass : '' });
-    const back = () => openResetSheet(u, { name: nn.value, pass: np.value });
+    const back = () => openResetSheet(u, { name: nn.value, pass: np.value, phone: nph.value });
     const afterPhoto = r => {
       u.photo = r.user.photo; u.banner = r.user.banner;
       if (u.username === me()) useSession({ token: state.session, user: r.user });
@@ -628,6 +636,7 @@
       type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: async () => {
         err.hidden = true; ok.disabled = true;
         const body = { name: nn.value.trim() };
+        if (u.role === 'decorateur') body.phone = nph.value.trim();
         if (np.value) body.password = np.value;
         try { await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), body); toast('Compte de ' + u.username + ' mis à jour.'); refreshData(); openStaffSheet(); }
         catch (x) { err.textContent = x.message; err.hidden = false; }
@@ -642,11 +651,43 @@
         () => choosePhoto(async blob => afterPhoto(await api('PUT', bannerPath, blob, 'image/jpeg')), back, 'Image de fond de ' + (u.name || u.username), 'banner'),
         async () => afterPhoto(await api('DELETE', bannerPath))) : null,
       field('Nom affiché', nn, 'Pour un décorateur, c’est le nom de sa catégorie.'),
+      u.role === 'decorateur' ? field('Numéro de téléphone', nph, 'Affiché sous sa carte dans « Décorateurs ». Laisse vide pour le retirer.') : null,
       field('Nouveau mot de passe', np, 'Au moins 8 caractères. L’employé sera déconnecté de ses appareils.'), err
     ], [ok, el('button', { type: 'button', class: 'btn', text: 'Retour', onclick: openStaffSheet })]);
     setTimeout(() => nn.focus(), 50);
   }
   // bloc « photo de profil » : aperçu rond + changer / retirer (enregistré tout de suite, sans passer par « Enregistrer »)
+  // bloc « numéro de téléphone » de « Mon compte » (enregistré avec son propre bouton)
+  function phoneBlock(phone, save, help) {
+    const input = el('input', { id: 'myPhone', type: 'tel', inputmode: 'tel', maxlength: 24, autocomplete: 'off', placeholder: 'ex. 555-0142', value: phone || '' });
+    const msg = el('p', { class: 'note error', hidden: true });
+    const btn = el('button', { type: 'button', class: 'btn', id: 'myPhoneSave', text: 'Enregistrer le numéro' });
+    const go = async () => {
+      msg.hidden = true; btn.disabled = true;
+      try {
+        const v = await save(input.value.trim());
+        input.value = v || '';
+        toast(v ? 'Numéro enregistré : ' + v + '.' : 'Numéro retiré.');
+      } catch (e) { msg.textContent = e.message; msg.hidden = false; }
+      btn.disabled = false;
+    };
+    btn.addEventListener('click', go);
+    inputEnter([input], go);
+    return el('div', { class: 'phoneblock' }, [field('Mon numéro de téléphone (en jeu)', input, help + ' Laisse vide pour le retirer.'), el('div', { class: 'phonerow' }, [btn]), msg]);
+  }
+  // le numéro d'un décorateur : un clic le copie, pour l'appeler en jeu
+  function phoneBtn(x, cls) {
+    if (!x.phone) return null;
+    return el('button', {
+      type: 'button', class: 'decophone' + (cls ? ' ' + cls : ''), title: 'Copier le numéro', 'aria-label': 'Copier le numéro de ' + x.name + ' : ' + x.phone,
+      onclick: async e => {
+        e.preventDefault(); e.stopPropagation();
+        let ok = false;
+        try { await navigator.clipboard.writeText(x.phone); ok = true; } catch (er) { /* copie refusée par le navigateur */ }
+        toast(ok ? 'Numéro de ' + x.name + ' copié : ' + x.phone : 'Numéro de ' + x.name + ' : ' + x.phone, 3500);
+      }
+    }, [el('span', { class: 'ico', html: ICON.phone }), el('span', { class: 'num', text: x.phone }), el('span', { class: 'copy', text: 'Copier' })]);
+  }
   function photoBlock(name, photo, sub, help, onPick, onRemove) {
     const err = el('p', { class: 'note error', hidden: true });
     const del = photo ? el('button', {
@@ -2204,7 +2245,7 @@
         list.length ? el('div', { class: 'decogrid' }, list.map(x => {
           const items = state.data.listings.filter(l => l.deco === x.id && l.points.length);
           const bg = decoBanner(x);
-          return el('a', { class: 'decocard', href: '#/decorateurs/' + x.id }, [
+          const card = el('a', { class: 'decocard', href: '#/decorateurs/' + x.id }, [
             el('span', { class: 'banner' + (bg ? '' : ' empty'), style: bg ? { backgroundImage: 'url("' + bg + '")' } : {} }),
             el('span', { class: 'who' }, [
               avatarEl(x.name, x.photo, 'deco'),
@@ -2213,6 +2254,7 @@
               el('span', { class: 'go', text: 'Voir ses décorations' })
             ])
           ]);
+          return el('div', { class: 'decoitem' }, [card, phoneBtn(x)]);
         })) : el('p', { class: 'note', text: 'Aucun décorateur pour le moment.' })
       ]);
       return;
@@ -2232,7 +2274,8 @@
           avatarEl(x.name, x.photo, 'xl'),
           el('div', {}, [
             el('h1', { text: x.name }),
-            el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' })
+            el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' }),
+            phoneBtn(x, 'inline')
           ])
         ])
       ]),

@@ -87,6 +87,7 @@ async function route(request, env, ctx) {
   // tout le reste demande une session valide
   const me = await auth(request, env);
   if (path === '/api/me' && m === 'GET') return json({ user: publicUser(me) });
+  if (path === '/api/me' && m === 'PATCH') return updateMe(request, env, me);
   if (path === '/api/password' && m === 'POST') return changeOwnPassword(request, env, me);
   if ((path === '/api/me/photo' || path === '/api/me/banner') && (m === 'PUT' || m === 'DELETE')) return setPhoto(request, env, me, me.username, m === 'DELETE', path.endsWith('banner') ? 'banner' : 'photo');
   if (path.startsWith('/api/media/') && m === 'PUT') return putMedia(request, env, me, path.slice('/api/'.length));
@@ -372,7 +373,7 @@ function sanitize(d, lenient) {
     });
     if (l.start !== null && !pids.has(l.start)) l.start = l.points[0] ? l.points[0].id : null;
   });
-  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => decoEntry(x.id, str(x.name, 40), x.photo, x.banner));
+  if (d.decorators !== undefined) d.decorators = (Array.isArray(d.decorators) ? d.decorators : []).filter(x => isObj(x) && typeof x.id === 'string' && /^[a-z0-9]{1,20}$/.test(x.id)).slice(0, 100).map(x => decoEntry(x.id, str(x.name, 40), x.photo, x.banner, x.phone));
   if (d.site !== undefined) d.site = sanitizeSite(d.site);
   if (d.site === undefined) delete d.site;
 }
@@ -479,16 +480,26 @@ function checkBases(cur, next) {
 }
 // catégories « Décorateurs » : un compte décorateur = une catégorie ; celle d'un compte supprimé reste tant qu'elle contient des décorations
 const okPhoto = v => typeof v === 'string' && PHOTO_RE.test(v);
-function decoEntry(id, name, photo, banner) {
+// numéro de téléphone en jeu (ex. 555-0142), affiché sous la carte d'un décorateur
+const PHONE_RE = /^[0-9 +\-.()]{3,24}$/;
+const okPhone = v => typeof v === 'string' && PHONE_RE.test(v) && (v.match(/\d/g) || []).length >= 3 && (v.match(/\d/g) || []).length <= 15;
+function cleanPhone(v) {
+  const s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (!okPhone(s)) bad('Numéro de téléphone non valable : seulement des chiffres (3 à 15), des espaces et + - . ( ).');
+  return s;
+}
+function decoEntry(id, name, photo, banner, phone) {
   const x = { id, name };
   if (okPhoto(photo)) x.photo = photo;
   if (okPhoto(banner)) x.banner = banner;   // image de fond de la carte du décorateur
+  if (okPhone(phone)) x.phone = phone;
   return x;
 }
 function computeDecorators(staff, data, prev) {
-  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo, u.banner));
+  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo, u.banner, u.phone));
   const ids = new Set(list.map(x => x.id));
-  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo, x.banner)); ids.add(x.id); } });
+  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo, x.banner, x.phone)); ids.add(x.id); } });
   return list.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 // photos de profil et images de fond qui ne servent plus : ni à un compte, ni à une catégorie de décorateur
@@ -559,7 +570,7 @@ async function getStaff(env) {
   return staff;
 }
 const putStaff = (env, s) => env.DB.put('staff', JSON.stringify(s));
-const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null, banner: u.banner || null });
+const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null });
 
 const enc = new TextEncoder();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -677,13 +688,14 @@ async function changeOwnPassword(request, env, me) {
   nu.created = me.created; nu.uid = me.uid; nu.v = (me.v || 1) + 1;
   if (me.photo) nu.photo = me.photo;
   if (me.banner) nu.banner = me.banner;
+  if (me.phone) nu.phone = me.phone;
   staff.users[me.username] = nu;
   await putStaff(env, staff);
   return json(await issueSession(env, nu));
 }
 async function listStaff(env) {
   const staff = await getStaff(env);
-  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, banner: u.banner || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
+  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
 async function createStaff(request, env, me) {
   const body = await readJson(request);
@@ -714,6 +726,10 @@ async function updateStaff(request, env, me, name) {
     const nn = cleanName(body.name, u.username);
     if (nn !== (u.name || u.username)) { u.name = nn; logs.push('a renommé le compte de ' + name + ' en « ' + nn + ' »'); }
   }
+  if (body.phone !== undefined) {
+    const ph = cleanPhone(body.phone);
+    if (ph !== (u.phone || '')) { if (ph) u.phone = ph; else delete u.phone; logs.push((ph ? 'a changé' : 'a retiré') + ' le numéro de téléphone de ' + name); }
+  }
   if (body.password !== undefined) {
     checkNewPassword(body.password);
     const nu = await makeUser(u.username, body.password, u.role);
@@ -724,6 +740,20 @@ async function updateStaff(request, env, me, name) {
   await syncDecorators(env, staff);
   await addLog(env, me.username, logs);
   return listStaff(env);
+}
+// « Mon compte » : chacun note son propre numéro de téléphone (affiché sous la carte d'un décorateur)
+async function updateMe(request, env, me) {
+  const body = await readJson(request);
+  const staff = await getStaff(env);
+  const u = staff.users[me.username];
+  if (!u) throw new HttpError(404, 'not_found', 'Compte introuvable.');
+  if (body.phone !== undefined) {
+    const ph = cleanPhone(body.phone);
+    if (ph) u.phone = ph; else delete u.phone;
+  }
+  await putStaff(env, staff);
+  await syncDecorators(env, staff);
+  return json({ ok: true, user: publicUser(u) });
 }
 async function deleteStaff(env, me, name) {
   if (name === me.username) bad('Tu ne peux pas supprimer ton propre compte.');
