@@ -811,6 +811,8 @@ async function setPhoto(request, env, me, name, remove, kind) {
 // qui se suivent depuis la date d'entrée : payé jusqu'au = entrée + 7 jours × semaines payées.
 const TENANT_ROLES = ['admin', 'gerant'];
 const KINDS = ['location', 'achat'];
+const CLOSE_REASONS = ['expulsion', 'fin', 'autre'];
+const closeText = (t, r) => r === 'expulsion' ? 'expulsion' : r === 'fin' ? (t.kind === 'achat' ? 'vente terminée' : 'fin de location') : 'autre raison';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function cleanDate(v, what) {
   const s = String(v == null ? '' : v).trim();
@@ -895,7 +897,16 @@ async function tenantsApi(request, env, me, path, m) {
     // messages copiés : « averti le … » (2 semaines) et « avis d'expulsion le … » (3 semaines)
     if (body.warned === true) { t.warned = { at: now, by: me.username }; logs.push('a averti ' + who + ' : 2 semaines de retard'); }
     if (body.evicted === true) { t.evicted = { at: now, by: me.username }; logs.push('a émis un avis d’expulsion pour ' + who); }
-    if (body.archived === true && !t.archived) { t.archived = { at: now, by: me.username }; logs.push('a clôturé le dossier de ' + who); }
+    // clôture : avec une raison (expulsion, fin de location ou vente, autre) et une note ; on peut corriger la raison ensuite
+    if (body.archived === true) {
+      const reason = body.reason, note = String(body.note == null ? '' : body.note).trim().slice(0, 300);
+      if (!CLOSE_REASONS.includes(reason)) bad('Choisis pourquoi le dossier est clôturé.');
+      if (reason === 'autre' && !note) bad('Écris la raison de la clôture dans la note.');
+      const txt = closeText(t, reason) + (note ? ' (« ' + note + ' »)' : '');
+      if (!t.archived) { t.archived = { at: now, by: me.username, reason }; logs.push('a clôturé le dossier de ' + who + ' : ' + txt); }
+      else if (t.archived.reason !== reason || (t.archived.note || '') !== note) { t.archived.reason = reason; logs.push('a changé la raison de clôture de ' + who + ' : ' + txt); }
+      if (note) t.archived.note = note; else delete t.archived.note;
+    }
     if (body.archived === false && t.archived) { delete t.archived; logs.push('a rouvert le dossier de ' + who); }
     return done(logs);
   }

@@ -940,6 +940,21 @@ button.day:hover { border-color: var(--ink-3); }
 }
 .lv-ok { --lv: #1FA463; } .lv-attendu { --lv: #E3A600; } .lv-retard { --lv: #E46A1F; } .lv-expulsion { --lv: var(--danger); }
 .lv-achat { --lv: var(--accent); } .lv-clos { --lv: var(--ink-3); }
+.lv-clos.clos-exp { --lv: var(--danger); } .lv-clos.clos-ok { --lv: #1FA463; }   /* clôturé : rouge = expulsion, vert = autre raison */
+.ts small.cnote { color: var(--ink); font-style: italic; overflow-wrap: anywhere; }
+.ts small.cnote::before { content: '« '; } .ts small.cnote::after { content: ' »'; }
+.reasons { display: grid; gap: 8px; }
+.reason {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 12px; align-items: start; text-align: left; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink);
+}
+.reason { --rc: #1FA463; } .reason.r-exp { --rc: var(--danger); }
+.reason .dot { width: 12px; height: 12px; margin-top: 4px; border-radius: 50%; border: 2px solid var(--rc); }
+.reason b { display: block; font-family: var(--label); font-stretch: var(--narrow); font-weight: 750; font-size: 16.5px; }
+.reason small { display: block; margin-top: 2px; color: var(--ink-2); font-size: 13.5px; line-height: 1.35; }
+.reason:hover { border-color: var(--ink-3); }
+.reason[aria-checked="true"] { border-color: var(--rc); background: color-mix(in srgb, var(--rc) 10%, var(--card)); box-shadow: inset 0 0 0 1px var(--rc); }
+.reason[aria-checked="true"] .dot { background: var(--rc); }
 .trow .tw { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .trow .tw .avatar { width: 42px; height: 42px; }
 .trow .tw b { display: block; font-family: var(--display); font-stretch: 112%; font-weight: 750; font-size: 18px; line-height: 1.2; overflow-wrap: anywhere; }
@@ -1359,10 +1374,10 @@ html.intro-pending body::after { content: ''; position: fixed; inset: 0; z-index
 <div class="modal" id="modal" hidden><div class="box"><h3 id="modalTitle"></h3><p id="modalText"></p><div class="acts" id="modalActs"></div></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="stitcher.js?v=20261022b"></script>
-<script src="viewer.js?v=20261022b"></script>
-<script src="app.js?v=20261022b"></script>
-<script src="intro.js?v=20261022b"></script>
+<script src="stitcher.js?v=20261022c"></script>
+<script src="viewer.js?v=20261022c"></script>
+<script src="app.js?v=20261022c"></script>
+<script src="intro.js?v=20261022c"></script>
 
 </body>
 </html>

@@ -2577,12 +2577,15 @@
   // nom + bien : deux dossiers de la même personne (même nom, même numéro) restent faciles à distinguer
   const tenantLabel = t => fullName(t) + ' (' + t.interior + (t.zone ? ', ' + t.zone : '') + ')';
   const weeksTxt = n => n + (n > 1 ? ' semaines' : ' semaine');
+  // raisons de clôture : en rouge l'expulsion, en vert tout le reste
+  const closeLabel = (t, r) => r === 'expulsion' ? 'Expulsion' : r === 'fin' ? (t.kind === 'achat' ? 'Vente terminée' : 'Fin de location') : r === 'autre' ? 'Autre raison' : '';
+  const lvCls = s => 'lv-' + s.code + (s.code === 'clos' ? (s.reason === 'expulsion' ? ' clos-exp' : ' clos-ok') : '');
   const searchKey = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
   // où en est un dossier aujourd'hui
   function tenantState(t, today) {
     if (today === undefined) today = dayNum(todayStr());
-    if (t.archived) return { level: -1, code: 'clos' };
+    if (t.archived) return { level: -1, code: 'clos', reason: t.archived.reason || '' };
     if (t.kind === 'achat') return { level: 0, code: 'achat' };
     const weeks = (t.payments || []).reduce((n, p) => n + (p.weeks || 0), 0);
     const until = dayNum(t.start) + 7 * weeks;
@@ -2665,7 +2668,8 @@
     const tabs = el('div', { class: 'filters tenant-tabs' }, [chip('tous', c.tous), chip('retard', c.retard, true), chip('expulsion', c.expulsion, true), chip('clotures', c.clotures), el('span', { class: 'sep' }), search]);
     let list = rows.filter(r => view === 'clotures' ? r.s.code === 'clos'
       : view === 'retard' ? r.s.code === 'retard' : view === 'expulsion' ? r.s.code === 'expulsion' : r.s.code !== 'clos');
-    list.sort((a, b) => (b.s.level - a.s.level) || ((a.s.since || '') < (b.s.since || '') ? -1 : (a.s.since || '') > (b.s.since || '') ? 1 : 0) || fullName(a.t).localeCompare(fullName(b.t), 'fr'));
+    if (view === 'clotures') list.sort((a, b) => (b.t.archived.at || '').localeCompare(a.t.archived.at || ''));   // les plus récents d'abord
+    else list.sort((a, b) => (b.s.level - a.s.level) || ((a.s.since || '') < (b.s.since || '') ? -1 : (a.s.since || '') > (b.s.since || '') ? 1 : 0) || fullName(a.t).localeCompare(fullName(b.t), 'fr'));
     let intro = null, gov = null;
     if (view === 'retard') intro = el('div', { class: 'callout', html: WARN }, [
       el('p', { text: 'Ces locataires n’ont rien payé depuis 2 semaines. Copie l’avertissement et envoie-le-leur : ils ont jusqu’à la date indiquée pour régler leurs retards et la semaine en cours.' }),
@@ -2697,7 +2701,11 @@
   }
   function tenantStatus(t, s) {
     const badge = (cls, txt) => el('span', { class: 'tbadge ' + cls, text: txt });
-    if (s.code === 'clos') return [badge('clos', 'Clôturé'), el('small', { text: 'le ' + frStamp(t.archived.at) })];
+    if (s.code === 'clos') {
+      const why = closeLabel(t, s.reason);
+      return [badge('clos', why ? 'Clôturé · ' + why : 'Clôturé'), el('small', { text: 'le ' + frStamp(t.archived.at) + (t.archived.by ? ' par ' + t.archived.by : '') }),
+        t.archived.note ? el('small', { class: 'cnote', text: t.archived.note }) : (why ? null : el('small', { class: 'cnote', text: 'Raison non précisée' }))];
+    }
     if (s.code === 'achat') return [badge('achat', 'Achat'), el('small', { text: 'le ' + frDate(t.start) })];
     if (s.code === 'ok') return [badge('ok', 'À jour'), el('small', { text: 'Prochain paiement le ' + frDate(s.since) })];
     if (s.code === 'attendu') return [badge('attendu', 'Paiement attendu'), el('small', { text: 'depuis le ' + frDate(s.since) + ' (' + usd(t.rent) + ')' })];
@@ -2711,7 +2719,7 @@
     if (s.code === 'retard') acts.push(el('button', { type: 'button', class: 'btn sm warn-out', html: ICON.copy + '<span>Copier l’avertissement</span>', onclick: () => copyTenantMessage(t, 'warned') }));
     if (s.code === 'expulsion') acts.push(el('button', { type: 'button', class: 'btn sm danger', html: ICON.copy + '<span>Copier l’avis d’expulsion</span>', onclick: () => copyTenantMessage(t, 'evicted') }));
     acts.push(el('button', { type: 'button', class: 'btn sm ghost', text: 'Ouvrir le dossier', onclick: () => openTenantSheet(t) }));
-    return el('article', { class: 'trow lv-' + s.code, 'data-q': searchKey([fullName(t), t.last + ' ' + t.first, t.phone, t.interior, t.zone].join(' ')) }, [
+    return el('article', { class: 'trow ' + lvCls(s), 'data-q': searchKey([fullName(t), t.last + ' ' + t.first, t.phone, t.interior, t.zone].concat(t.archived ? [closeLabel(t, s.reason), t.archived.note || ''] : []).join(' ')) }, [
       el('div', { class: 'tw' }, [avatarEl(fullName(t), null), el('div', {}, [el('b', { text: fullName(t) }), phoneBtn({ name: fullName(t), phone: t.phone }, 'mini')])]),
       el('div', { class: 'tb' }, [el('span', { text: t.interior }), el('small', { text: t.zone })]),
       el('div', { class: 'tm' }, t.kind === 'achat' ? [el('span', { text: usd(t.rent) }), el('small', { text: 'prix de vente' })] : [el('span', { text: usd(t.rent) }), el('small', { text: 'par semaine' })]),
@@ -2891,10 +2899,11 @@
       summary,
       field('Notes', notes),
       err];
-    if (!isNew) kids.unshift(el('div', { class: 'tsheet-status ts lv-' + tenantState(t).code }, tenantStatus(t, tenantState(t))));
+    if (!isNew) kids.unshift(el('div', { class: 'tsheet-status ts ' + lvCls(tenantState(t)) }, tenantStatus(t, tenantState(t))));
     if (!isNew && t.kind === 'location') kids.push(paymentsBlock(t, reopen));
     const foot = [saveBtn];
     if (!isNew && !t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Clôturer le dossier', onclick: () => archiveTenant(t, true) }));
+    if (!isNew && t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Modifier la raison', onclick: () => openCloseSheet(t) }));
     if (!isNew && t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Rouvrir le dossier', onclick: () => archiveTenant(t, false) }));
     if (!isNew && t.archived && isAdmin()) foot.push(el('button', { type: 'button', class: 'btn danger', text: 'Supprimer', onclick: () => deleteTenant(t) }));
     openSheet(isNew ? 'Nouveau dossier' : fullName(t) + ' · ' + t.interior, kids.flat(), foot);
@@ -2924,9 +2933,50 @@
     ]);
   }
   async function archiveTenant(t, on) {
-    if (on && !(await confirmBox('Clôturer le dossier de ' + tenantLabel(t) + ' ?', 'À faire quand la location est terminée. Le dossier reste dans « Dossiers clôturés » et peut être rouvert.', 'Clôturer'))) { openTenantSheet(t); return; }
-    try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { archived: on })); closeSheet(); toast(on ? 'Dossier clôturé.' : 'Dossier rouvert.'); }
+    if (on) { openCloseSheet(t); return; }
+    try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { archived: false })); closeSheet(); toast('Dossier de ' + tenantLabel(t) + ' rouvert.'); }
     catch (e) { toast(e.message, 4500); }
+  }
+  // ---- clôturer un dossier : pourquoi ? (expulsion en rouge, le reste en vert) + une note
+  function openCloseSheet(t) {
+    const editing = !!t.archived, st = tenantState(t);
+    let reason = editing ? (t.archived.reason || '') : (st.code === 'expulsion' ? 'expulsion' : 'fin');
+    const reasons = (t.kind === 'achat' ? ['fin', 'autre'] : ['expulsion', 'fin', 'autre']).map(r => ({ r, label: closeLabel(t, r),
+      help: r === 'expulsion' ? 'Loyers impayés, avis d’expulsion transmis au gouvernement.'
+        : r === 'fin' ? (t.kind === 'achat' ? 'L’achat est réglé, plus rien à suivre.' : 'Le locataire est parti ou a rendu les clés.')
+        : 'Toute autre raison : écris-la dans la note.' }));
+    const note = el('textarea', { id: 'closeNote', maxlength: 300, rows: 3 }); note.value = editing ? (t.archived.note || '') : '';
+    const err = el('p', { class: 'note error', hidden: true });
+    const pick = el('div', { class: 'reasons', role: 'radiogroup', 'aria-label': 'Raison de la clôture' });
+    const draw = () => {
+      fill(pick, reasons.map(x => el('button', {
+        type: 'button', role: 'radio', class: 'reason ' + (x.r === 'expulsion' ? 'r-exp' : 'r-ok'), 'aria-checked': String(reason === x.r), 'data-r': x.r,
+        onclick: () => { reason = x.r; err.hidden = true; draw(); }
+      }, [el('span', { class: 'dot' }), el('span', {}, [el('b', { text: x.label }), el('small', { text: x.help })])])));
+      note.placeholder = reason === 'autre' ? 'Obligatoire : explique pourquoi le dossier est clôturé.' : reason === 'expulsion' ? 'Facultatif. ex. avis transmis au gouvernement le 05/11' : 'Facultatif. ex. a rendu les clés le 05/11, tout est réglé';
+    };
+    draw();
+    const save = el('button', {
+      type: 'button', class: 'btn primary', id: 'closeSave', text: editing ? 'Enregistrer la raison' : 'Clôturer le dossier', onclick: async () => {
+        err.hidden = true;
+        if (!reason) { err.textContent = 'Choisis pourquoi le dossier est clôturé.'; err.hidden = false; return; }
+        if (reason === 'autre' && !note.value.trim()) { err.textContent = 'Écris la raison de la clôture dans la note.'; err.hidden = false; note.focus(); return; }
+        save.disabled = true;
+        try {
+          adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { archived: true, reason, note: note.value }));
+          closeSheet();
+          toast(editing ? 'Raison de clôture mise à jour.' : 'Dossier de ' + tenantLabel(t) + ' clôturé : ' + closeLabel(t, reason).toLowerCase() + '.', 4500);
+        } catch (e) { err.textContent = e.message; err.hidden = false; }
+        save.disabled = false;
+      }
+    });
+    openSheet(editing ? 'Raison de la clôture' : 'Clôturer le dossier', [
+      el('div', { class: 'tsheet-who' }, [el('b', { text: fullName(t) }), el('small', { text: t.interior + (t.zone ? ', ' + t.zone : '') + (t.kind === 'achat' ? ' · achat' : ' · ' + usd(t.rent) + ' par semaine') })]),
+      el('div', { class: 'field' }, [el('span', { class: 'flabel', text: 'Pourquoi ce dossier est-il clôturé ?' }), pick]),
+      field('Note', note),
+      editing ? null : el('p', { class: 'help', text: 'Le dossier passe dans « Dossiers clôturés », avec la raison et la note. Il peut être rouvert à tout moment.' }),
+      err
+    ], [save, el('button', { type: 'button', class: 'btn', text: 'Annuler', onclick: () => openTenantSheet(t) })]);
   }
   async function deleteTenant(t) {
     if (!(await confirmBox('Supprimer le dossier de ' + tenantLabel(t) + ' ?', 'Il disparaît pour de bon, avec ses paiements.', 'Supprimer'))) { openTenantSheet(t); return; }
