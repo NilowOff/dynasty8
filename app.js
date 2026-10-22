@@ -66,6 +66,7 @@
     return n;
   }
   const ICON = {
+    copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>',
     phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2Z"/></svg>',
     pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -470,6 +471,10 @@
     if ($('histBtn')) $('histBtn').hidden = !(u && u.role === 'admin');
     if ($('accountBtn')) $('accountBtn').hidden = !u;
     const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? ROLE_NAMES[u.role] : 'Mode agent';
+    // « Locataires » : dans le menu dès la connexion, sans passer par l'espace employé
+    if (canTenants()) loadTenants(); else tenants.items = null;
+    renderNav();
+    if (currentPage === 'locataires') renderTenants();
   }
   function inputEnter(inputs, fn) { inputs.forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fn(); } })); }
 
@@ -809,7 +814,7 @@
   // ------------------------------------------------------------------ mode employé
   async function initCaps() {
     if (API) {
-      $('agentBtn').hidden = false;
+      $('agentBtn').hidden = false; fitNav();
       let s = null; try { s = JSON.parse(localStorage.getItem('d8-session') || 'null'); } catch (e) { }
       if (s && s.token) {
         state.session = s.token;
@@ -834,7 +839,7 @@
       if (user) { try { can = (await user.isOwner()) || (await user.canEdit()); } catch (e) { can = false; } }
       if (!can) return;
       state.artifact = artifact; state.canEdit = true;
-      $('agentBtn').hidden = false;
+      $('agentBtn').hidden = false; fitNav();
       let saved = false; try { saved = sessionStorage.getItem('d8-agent') === '1'; } catch (e) { }
       if (saved) setAgent(true);
       offerDraft();
@@ -1943,7 +1948,7 @@
   const typePlural = t => (TYPE_INFO[t] || {}).plural || t;
   const typeSlug = t => (TYPE_INFO[t] || {}).slug || slugify(t);
   const typeFromSlug = s => TYPES.find(t => typeSlug(t) === s) || null;
-  const PAGE_TITLES = { accueil: 'Accueil', catalogue: 'Catalogue', decorateurs: 'Décorateurs', informations: 'Informations', equipe: 'Qui sommes-nous ?', recrutements: 'Recrutements', calendrier: 'Calendrier', faq: 'Réponses FAQ', avis: 'Avis' };
+  const PAGE_TITLES = { accueil: 'Accueil', catalogue: 'Catalogue', decorateurs: 'Décorateurs', informations: 'Informations', equipe: 'Qui sommes-nous ?', recrutements: 'Recrutements', calendrier: 'Calendrier', faq: 'Réponses FAQ', avis: 'Avis', locataires: 'Locataires' };
 
   const SITE_DEFAULT = {
     home: {
@@ -2050,6 +2055,7 @@
     else if (name === 'faq') renderFaq();
     else if (name === 'decorateurs') renderDeco();
     else if (name === 'avis') renderAvis();
+    else if (name === 'locataires') renderTenants();
   }
   const refreshPage = () => renderPage(currentPage);
 
@@ -2070,9 +2076,11 @@
           el('span', { class: 'dd-who' }, [avatarEl(x.name, x.photo, 'xs'), el('span', { text: x.name })]), n ? el('small', { text: String(n) }) : null
         ]);
       })));
+    renderTenantNav(link);
     document.querySelectorAll('.mainnav > a, .mainnav .dd-top').forEach(a => {
       if (a.dataset.page === currentPage) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
+    fitNav();
   }
   // ---- mode sombre (bouton lune / soleil dans l'en-tête)
   const themeNow = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
@@ -2098,6 +2106,27 @@
     const open = !$('mainnav').classList.contains('open');
     $('mainnav').classList.toggle('open', open); $('navToggle').setAttribute('aria-expanded', String(open));
   });
+  // le menu s'adapte à la place : sur une ligne si possible, sinon en-tête élargi, sinon bouton ☰
+  // (le menu s'allonge pour les employés : « Locataires », décorateurs…)
+  function fitNav() {
+    const root = document.documentElement, inner = $('top').firstElementChild, acts = inner.querySelector('.top-actions');
+    root.classList.remove('navcompact', 'navtight'); inner.style.maxWidth = '';
+    if (window.innerWidth <= 1120) { root.classList.add('navcompact'); return; }
+    const tryFit = () => {
+      const box = inner.getBoundingClientRect();
+      const over = acts.getBoundingClientRect().right - (box.right - parseFloat(getComputedStyle(inner).paddingRight));
+      if (over <= 1) return true;
+      const want = Math.ceil(box.width + over + 2);   // l'en-tête s'élargit juste de ce qu'il faut
+      if (want > root.clientWidth) return false;
+      inner.style.maxWidth = want + 'px'; return true;
+    };
+    if (tryFit()) return;
+    root.classList.add('navtight'); if (tryFit()) return;   // liens un peu plus serrés
+    root.classList.remove('navtight'); root.classList.add('navcompact');
+  }
+  let fitTimer = 0;
+  window.addEventListener('resize', () => { cancelAnimationFrame(fitTimer); fitTimer = requestAnimationFrame(fitNav); });
+  try { document.fonts.ready.then(fitNav); } catch (e) { }
 
   // ---- accueil
   function renderHome() {
@@ -2522,6 +2551,412 @@
     }
   };
 
+  // ------------------------------------------------------------------ locataires
+  // Suivi des locations et des ventes, pour les gérants et les admins (données privées, gardées à part sur le serveur).
+  // Location : chaque paiement couvre des semaines qui se suivent depuis la date d'entrée.
+  //   premier jour non payé = entrée + 7 jours × semaines payées
+  //   semaines de retard = semaines commencées depuis ce jour (1 = paiement attendu, 2 = avertissement, 3 et plus = expulsion)
+  const canTenants = () => !!state.user && (state.user.role === 'admin' || state.user.role === 'gerant');
+  const tenants = { items: null, loading: false, error: null, view: 'tous', q: '', at: 0 };
+  const TENANT_VIEWS = { tous: 'Tous les dossiers', retard: '2 semaines de retard', expulsion: 'Avis d’expulsion', clotures: 'Dossiers clôturés' };
+  const ZONES = ['Alta', 'Banham Canyon', 'Banning', 'Burton', 'Chamberlain Hills', 'Chumash', 'Cypress Flats', 'Davis', 'Del Perro', 'Downtown',
+    'Downtown Vinewood', 'East Vinewood', 'El Burro Heights', 'Elysian Island', 'Grapeseed', 'Great Chaparral', 'Harmony', 'Hawick', 'La Mesa',
+    'La Puerta', 'Little Seoul', 'Mirror Park', 'Mission Row', 'Morningwood', 'Mount Chiliad', 'Murrieta Heights', 'Pacific Bluffs', 'Paleto Bay',
+    'Pillbox Hill', 'Rancho', 'Richman', 'Rockford Hills', 'Sandy Shores', 'Strawberry', 'Tataviam Mountains', 'Textile City', 'Tongva Hills',
+    'Vespucci', 'Vespucci Canals', 'Vinewood', 'Vinewood Hills', 'West Vinewood', 'Zancudo'];
+  const DAY = 864e5;
+  const pad2 = n => String(n).padStart(2, '0');
+  const localDay = d => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  const todayStr = () => localDay(new Date());
+  const dayNum = s => { const p = String(s).split('-').map(Number); return Math.round(Date.UTC(p[0], p[1] - 1, p[2]) / DAY); };
+  const dayStr = n => new Date(n * DAY).toISOString().slice(0, 10);
+  const frDate = s => s ? s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4) : '';
+  const frStamp = iso => frDate(localDay(new Date(iso)));
+  const usd = n => nf.format(Math.round(n || 0)) + ' $';
+  const fullName = t => t.first + ' ' + t.last;
+  const weeksTxt = n => n + (n > 1 ? ' semaines' : ' semaine');
+  const searchKey = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+  // où en est un dossier aujourd'hui
+  function tenantState(t, today) {
+    if (today === undefined) today = dayNum(todayStr());
+    if (t.archived) return { level: -1, code: 'clos' };
+    if (t.kind === 'achat') return { level: 0, code: 'achat' };
+    const weeks = (t.payments || []).reduce((n, p) => n + (p.weeks || 0), 0);
+    const until = dayNum(t.start) + 7 * weeks;
+    const level = today >= until ? Math.floor((today - until) / 7) + 1 : 0;
+    const since = dayStr(until);
+    const after = x => x && localDay(new Date(x.at)) >= since ? x : null;   // un avertissement d'un retard précédent ne compte plus
+    return {
+      level, code: level === 0 ? 'ok' : level === 1 ? 'attendu' : level === 2 ? 'retard' : 'expulsion',
+      weeks, since, paidTo: dayStr(until - 1), deadline: dayStr(until + 14), owed: level * t.rent,
+      warned: after(t.warned), evicted: after(t.evicted)
+    };
+  }
+  function tenantCounts() {
+    const c = { tous: 0, retard: 0, expulsion: 0, clotures: 0 };
+    const today = dayNum(todayStr());
+    (tenants.items || []).forEach(t => {
+      const s = tenantState(t, today);
+      if (s.code === 'clos') { c.clotures++; return; }
+      c.tous++;
+      if (s.code === 'retard') c.retard++;
+      if (s.code === 'expulsion') c.expulsion++;
+    });
+    return c;
+  }
+  async function loadTenants(force) {
+    if (!canTenants()) { tenants.items = null; return; }
+    if (tenants.loading || (!force && tenants.items && Date.now() - tenants.at < 60000)) return;
+    tenants.loading = true; tenants.error = null;
+    try { adoptTenants(await api('GET', '/api/tenants')); }
+    catch (e) { tenants.error = e.message; if (e.status === 401) dropSession(); }
+    tenants.loading = false;
+    renderNav(); if (currentPage === 'locataires') renderTenants();
+  }
+  function adoptTenants(r) {
+    tenants.items = r.items; tenants.at = Date.now();
+    renderNav(); if (currentPage === 'locataires') renderTenants();
+  }
+  // le menu « Locataires » : seulement pour les gérants et les admins connectés
+  function renderTenantNav(link) {
+    const nav = $('tenantNav'); if (!nav) return;
+    nav.hidden = !canTenants();
+    if (nav.hidden) return;
+    const c = tenantCounts(), on = currentPage === 'locataires', late = c.retard + c.expulsion;
+    const badge = $('tenantBadge'); badge.hidden = !late; badge.textContent = String(late);
+    const hot = (href, label, n, cur) => { const a = link(href, label, 0, cur); a.append(el('small', { class: n ? 'hot' : null, text: String(n) })); return a; };
+    fill($('ddTenants'), [
+      link('#/locataires', 'Tous les dossiers', c.tous, on && tenants.view === 'tous'),
+      hot('#/locataires/retard', '2 semaines de retard', c.retard, on && tenants.view === 'retard'),
+      hot('#/locataires/expulsion', 'Avis d’expulsion', c.expulsion, on && tenants.view === 'expulsion'),
+      el('hr'),
+      link('#/locataires/clotures', 'Dossiers clôturés', c.clotures, on && tenants.view === 'clotures')
+    ]);
+  }
+
+  // ---- la page
+  function renderTenants() {
+    const box = $('pTenants'); if (!box) return;
+    if (!state.user) {
+      fill(box, [pageHead('Locataires', null), el('div', { class: 'lockbox' }, [
+        el('p', { text: 'Cette page est réservée aux employés de l’agence. Connecte-toi pour voir les dossiers.' }),
+        el('button', { type: 'button', class: 'btn primary', text: 'Se connecter', onclick: openLogin })
+      ])]);
+      return;
+    }
+    if (!canTenants()) { fill(box, [pageHead('Locataires', null), el('p', { class: 'note', text: 'Le suivi des locataires est réservé aux gérants et aux admins.' })]); return; }
+    const view = tenants.view;
+    const head = el('div', { class: 'cat-head' }, [
+      el('div', {}, [el('h1', { text: 'Locataires' }), el('p', { class: 'sub', text: 'Suivi des locations et des ventes. Visible seulement par les gérants et les admins.' })]),
+      el('button', { type: 'button', class: 'btn sun', id: 'tenantNew', html: ICON.plus + '<span>Nouveau dossier</span>', onclick: () => openTenantSheet(null) })
+    ]);
+    if (!tenants.items) { fill(box, [head, el('p', { class: 'empty', text: tenants.error || 'Chargement des dossiers…' })]); return; }
+    const today = dayNum(todayStr());
+    const rows = tenants.items.map(t => ({ t, s: tenantState(t, today) }));
+    const c = tenantCounts();
+    const chip = (v, n, hot) => el('button', {
+      type: 'button', class: 'chip' + (hot && n ? ' hot' : ''), 'aria-pressed': String(view === v),
+      onclick: () => { location.hash = v === 'tous' ? '#/locataires' : '#/locataires/' + v; }
+    }, [TENANT_VIEWS[v], el('small', { text: String(n) })]);
+    const search = el('input', { type: 'search', id: 'tenantSearch', placeholder: 'Nom, téléphone, bien…', 'aria-label': 'Rechercher un dossier', value: tenants.q });
+    const tabs = el('div', { class: 'filters tenant-tabs' }, [chip('tous', c.tous), chip('retard', c.retard, true), chip('expulsion', c.expulsion, true), chip('clotures', c.clotures), el('span', { class: 'sep' }), search]);
+    let list = rows.filter(r => view === 'clotures' ? r.s.code === 'clos'
+      : view === 'retard' ? r.s.code === 'retard' : view === 'expulsion' ? r.s.code === 'expulsion' : r.s.code !== 'clos');
+    list.sort((a, b) => (b.s.level - a.s.level) || ((a.s.since || '') < (b.s.since || '') ? -1 : (a.s.since || '') > (b.s.since || '') ? 1 : 0) || fullName(a.t).localeCompare(fullName(b.t), 'fr'));
+    let intro = null, gov = null;
+    if (view === 'retard') intro = el('div', { class: 'callout', html: WARN }, [
+      el('p', { text: 'Ces locataires n’ont rien payé depuis 2 semaines. Copie l’avertissement et envoie-le-leur : ils ont jusqu’à la date indiquée pour régler leurs retards et la semaine en cours.' }),
+      el('p', { class: 'fine', text: 'Sans paiement, ils passent tout seuls dans « Avis d’expulsion ». Une seule semaine de retard n’apparaît pas ici : ça peut être un oubli.' })
+    ]);
+    if (view === 'expulsion') {
+      intro = el('div', { class: 'callout danger', html: WARN }, [
+        el('p', { text: 'Ces locataires ont 3 semaines de retard ou plus et ont normalement déjà été avertis.' }),
+        el('p', { class: 'fine', text: 'Copie l’avis d’expulsion de chacun, ou d’un coup le dossier complet pour le gouvernement.' })
+      ]);
+      if (list.length) gov = el('div', { class: 'govbar' }, [
+        el('div', {}, [el('b', { text: 'Dossier pour le gouvernement' }), el('small', { text: list.length + (list.length > 1 ? ' locataires à expulser, ' : ' locataire à expulser, ') + usd(list.reduce((n, r) => n + r.s.owed, 0)) + ' impayés' })]),
+        el('button', { type: 'button', class: 'btn danger-fill', id: 'govCopy', html: ICON.copy + '<span>Copier l’avis d’expulsion pour le gouvernement</span>', onclick: () => copyGovernment(list) })
+      ]);
+    }
+    const empty = el('p', { class: 'empty', id: 'tenantEmpty', text: list.length ? 'Aucun dossier ne correspond à cette recherche.'
+      : view === 'retard' ? 'Personne n’a 2 semaines de retard. Tout le monde est à jour ou presque.'
+      : view === 'expulsion' ? 'Aucun locataire à expulser.' : view === 'clotures' ? 'Aucun dossier clôturé.'
+      : 'Aucun dossier pour l’instant. Ajoute le premier avec « Nouveau dossier ».' });
+    const listBox = el('div', { class: 'tlist' }, list.map(r => tenantRow(r.t, r.s)));
+    const applySearch = () => {
+      const q = searchKey(search.value.trim()); let shown = 0;
+      listBox.querySelectorAll('.trow').forEach(row => { const ok = !q || row.dataset.q.includes(q); row.hidden = !ok; if (ok) shown++; });
+      empty.hidden = shown > 0;
+    };
+    search.addEventListener('input', () => { tenants.q = search.value; applySearch(); });
+    fill(box, [head, tabs, intro, gov, listBox, empty]);
+    applySearch();
+  }
+  function tenantStatus(t, s) {
+    const badge = (cls, txt) => el('span', { class: 'tbadge ' + cls, text: txt });
+    if (s.code === 'clos') return [badge('clos', 'Clôturé'), el('small', { text: 'le ' + frStamp(t.archived.at) })];
+    if (s.code === 'achat') return [badge('achat', 'Achat'), el('small', { text: 'le ' + frDate(t.start) })];
+    if (s.code === 'ok') return [badge('ok', 'À jour'), el('small', { text: 'Prochain paiement le ' + frDate(s.since) })];
+    if (s.code === 'attendu') return [badge('attendu', 'Paiement attendu'), el('small', { text: 'depuis le ' + frDate(s.since) + ' (' + usd(t.rent) + ')' })];
+    const note = s.evicted ? 'Avis d’expulsion copié le ' + frStamp(s.evicted.at) : s.warned ? 'Averti le ' + frStamp(s.warned.at) : 'Pas encore averti';
+    if (s.code === 'retard') return [badge('retard', '2 semaines de retard'), el('small', { text: 'Impayé depuis le ' + frDate(s.since) + ', à régler avant le ' + frDate(s.deadline) }), el('small', { class: s.warned ? 'done' : 'todo', text: note })];
+    return [badge('expulsion', weeksTxt(s.level) + ' de retard'), el('small', { text: 'Impayé depuis le ' + frDate(s.since) + ' : ' + usd(s.owed) }), el('small', { class: s.evicted || s.warned ? 'done' : 'todo', text: note })];
+  }
+  function tenantRow(t, s) {
+    const acts = [];
+    if (t.kind === 'location' && !t.archived) acts.push(el('button', { type: 'button', class: 'btn primary sm', text: 'Paiement reçu', onclick: () => openPaySheet(t) }));
+    if (s.code === 'retard') acts.push(el('button', { type: 'button', class: 'btn sm warn-out', html: ICON.copy + '<span>Copier l’avertissement</span>', onclick: () => copyTenantMessage(t, 'warned') }));
+    if (s.code === 'expulsion') acts.push(el('button', { type: 'button', class: 'btn sm danger', html: ICON.copy + '<span>Copier l’avis d’expulsion</span>', onclick: () => copyTenantMessage(t, 'evicted') }));
+    acts.push(el('button', { type: 'button', class: 'btn sm ghost', text: 'Ouvrir le dossier', onclick: () => openTenantSheet(t) }));
+    return el('article', { class: 'trow lv-' + s.code, 'data-q': searchKey([fullName(t), t.last + ' ' + t.first, t.phone, t.interior, t.zone].join(' ')) }, [
+      el('div', { class: 'tw' }, [avatarEl(fullName(t), null), el('div', {}, [el('b', { text: fullName(t) }), phoneBtn({ name: fullName(t), phone: t.phone }, 'mini')])]),
+      el('div', { class: 'tb' }, [el('span', { text: t.interior }), el('small', { text: t.zone })]),
+      el('div', { class: 'tm' }, t.kind === 'achat' ? [el('span', { text: usd(t.rent) }), el('small', { text: 'prix de vente' })] : [el('span', { text: usd(t.rent) }), el('small', { text: 'par semaine' })]),
+      el('div', { class: 'ts' }, tenantStatus(t, s)),
+      el('div', { class: 'ta' }, acts)
+    ]);
+  }
+
+  // ---- les messages à copier
+  const signature = () => (state.user.name || state.user.username) + ', ' + (ROLE_NAMES[state.user.role] || 'employé') + ' au Dynasty 8';
+  function warningText(t, s) {
+    return [
+      'Bonjour ' + fullName(t) + ',',
+      '',
+      'Ici l’agence immobilière Dynasty 8. Le loyer de votre logement « ' + t.interior + ' » (' + t.zone + ') n’est plus réglé depuis le ' + frDate(s.since) + ' : vous avez maintenant 2 semaines de retard.',
+      '',
+      'Vous avez jusqu’au ' + frDate(s.deadline) + ' pour passer à l’agence régler vos 2 semaines de retard ainsi que la semaine en cours, soit ' + usd(3 * t.rent) + ' (' + usd(t.rent) + ' par semaine).',
+      '',
+      'Sans paiement à cette date, un avis d’expulsion sera transmis au gouvernement de San Andreas.',
+      '',
+      'Cordialement,',
+      signature()
+    ].join('\n');
+  }
+  function evictionText(t, s) {
+    return [
+      'AVIS D’EXPULSION',
+      '',
+      fullName(t) + ',',
+      '',
+      'Malgré notre avertissement, le loyer de votre logement « ' + t.interior + ' » (' + t.zone + ') n’est plus réglé depuis le ' + frDate(s.since) + ' : ' + weeksTxt(s.level) + ' impayées, soit ' + usd(s.owed) + '.',
+      '',
+      'L’agence immobilière Dynasty 8 transmet votre dossier au gouvernement de San Andreas en vue de votre expulsion. Vous devez libérer le logement et rendre les clés à l’agence.',
+      '',
+      'Fait à Los Santos, le ' + frDate(todayStr()) + '.',
+      signature()
+    ].join('\n');
+  }
+  function governmentText(list) {
+    const total = list.reduce((n, r) => n + r.s.owed, 0);
+    const out = [
+      'DYNASTY 8, AGENCE IMMOBILIÈRE DE LOS SANTOS',
+      'À l’attention du gouvernement de San Andreas',
+      '',
+      'Objet : demande d’expulsion pour loyers impayés',
+      'Date : ' + frDate(todayStr()),
+      '',
+      'Madame, Monsieur,',
+      '',
+      'L’agence Dynasty 8 vous transmet la liste des locataires qui n’ont pas réglé leur loyer depuis au moins 3 semaines, malgré nos avertissements. Nous demandons leur expulsion des logements concernés.',
+      '',
+      'Locataires concernés (' + list.length + ') :',
+      ''
+    ];
+    list.forEach((r, i) => {
+      const t = r.t, s = r.s;
+      out.push((i + 1) + '. ' + t.last.toUpperCase() + ' ' + t.first + ', téléphone ' + t.phone);
+      out.push('   Logement : ' + t.interior + ', ' + t.zone);
+      out.push('   Loyer : ' + usd(t.rent) + ' par semaine, impayé depuis le ' + frDate(s.since));
+      out.push('   Retard : ' + weeksTxt(s.level) + ', soit ' + usd(s.owed) + (s.warned ? ' (averti le ' + frStamp(s.warned.at) + ')' : ''));
+      out.push('');
+    });
+    out.push('Total des loyers impayés : ' + usd(total));
+    out.push('');
+    out.push('Nous restons à votre disposition pour tout renseignement complémentaire.');
+    out.push('');
+    out.push(signature());
+    return out.join('\n');
+  }
+  // copie ; si le navigateur refuse, le message s'affiche pour être copié à la main
+  async function copyText(text, title) {
+    text = text.replace(/[  ]/g, ' ');   // espaces simples : certains téléphones en jeu affichent mal les espaces insécables
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) {
+      const ta = el('textarea', { class: 'msgbox', readonly: true, rows: 14 }); ta.value = text;
+      openSheet(title, [el('p', { class: 'help', text: 'Ton navigateur n’a pas autorisé la copie : sélectionne le texte ci-dessous et copie-le.' }), ta]);
+      setTimeout(() => { ta.focus(); ta.select(); }, 50);
+      return false;
+    }
+  }
+  async function copyTenantMessage(t, kind) {
+    const s = tenantState(t);
+    const ok = await copyText(kind === 'warned' ? warningText(t, s) : evictionText(t, s), kind === 'warned' ? 'Avertissement' : 'Avis d’expulsion');
+    if (ok) toast((kind === 'warned' ? 'Avertissement' : 'Avis d’expulsion') + ' de ' + fullName(t) + ' copié. Colle-le dans le téléphone en jeu ou sur Discord.', 4500);
+    try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { [kind]: true })); } catch (e) { toast(e.message, 4500); }
+  }
+  async function copyGovernment(list) {
+    const ok = await copyText(governmentText(list), 'Avis pour le gouvernement');
+    if (ok) toast('Avis d’expulsion copié pour le gouvernement (' + list.length + (list.length > 1 ? ' locataires).' : ' locataire).'), 4500);
+    try {
+      let r = null;
+      for (const x of list) if (!x.s.evicted) r = await api('PATCH', '/api/tenants/' + encodeURIComponent(x.t.id), { evicted: true });
+      if (r) adoptTenants(r);
+    } catch (e) { toast(e.message, 4500); }
+  }
+
+  // ---- nouveau dossier / fiche d'un dossier
+  function openTenantSheet(t, draft) {
+    const isNew = !t;
+    const d = draft || (t ? { kind: t.kind, first: t.first, last: t.last, phone: t.phone, interior: t.interior, zone: t.zone, rent: String(t.rent), start: t.start, notes: t.notes || '' }
+      : { kind: 'location', first: '', last: '', phone: '', interior: '', zone: '', rent: '', weeks: '1', start: todayStr(), notes: '' });
+    const reopen = () => openTenantSheet(t, collect());
+    const inp = (id, attrs) => el('input', Object.assign({ id }, attrs));
+    const first = inp('tFirst', { value: d.first, maxlength: 40, autocomplete: 'off' });
+    const last = inp('tLast', { value: d.last, maxlength: 40, autocomplete: 'off' });
+    const phone = inp('tPhone', { type: 'tel', inputmode: 'tel', value: d.phone, maxlength: 24, autocomplete: 'off', placeholder: 'ex. 555-0142' });
+    const interior = inp('tInterior', { value: d.interior, maxlength: 60, autocomplete: 'off', list: 'dlInteriors', placeholder: 'ex. Duplex #1' });
+    const zone = inp('tZone', { value: d.zone, maxlength: 40, autocomplete: 'off', list: 'dlZones', placeholder: 'ex. Vinewood Hills' });
+    const rent = inp('tRent', { type: 'number', min: 0, step: 50, inputmode: 'numeric', value: d.rent });
+    const weeks = isNew ? inp('tWeeks', { type: 'number', min: 1, max: 52, step: 1, value: d.weeks || '1' }) : null;
+    const start = inp('tStart', { type: 'date', value: d.start });
+    const notes = el('textarea', { id: 'tNotes', maxlength: 400, rows: 3, placeholder: 'Facultatif' }); notes.value = d.notes || '';
+    const catalog = state.data.listings.filter(l => !l.deco);
+    const lists = [
+      el('datalist', { id: 'dlInteriors' }, catalog.map(l => el('option', { value: l.name }))),
+      el('datalist', { id: 'dlZones' }, ZONES.map(z => el('option', { value: z })))
+    ];
+    let kind = d.kind;
+    const collect = () => ({ kind, first: first.value, last: last.value, phone: phone.value, interior: interior.value, zone: zone.value, rent: rent.value, weeks: weeks ? weeks.value : '', start: start.value, notes: notes.value });
+    const summary = el('p', { class: 'tsum' });
+    const showSummary = () => {
+      if (!isNew || kind !== 'location') { summary.hidden = true; return; }
+      const r = Math.round(+rent.value || 0), w = Math.max(1, Math.round(+weeks.value || 1));
+      summary.hidden = !start.value;
+      if (start.value) summary.textContent = 'Payé : ' + usd(r * w) + ' pour ' + weeksTxt(w) + '. Couvert jusqu’au ' + frDate(dayStr(dayNum(start.value) + 7 * w - 1)) + ', prochain paiement le ' + frDate(dayStr(dayNum(start.value) + 7 * w)) + '.';
+    };
+    [rent, start].concat(weeks ? [weeks] : []).forEach(x => x.addEventListener('input', showSummary));
+    // un bien du catalogue : son loyer est proposé tout seul
+    interior.addEventListener('change', () => {
+      const l = catalog.find(x => x.name === interior.value.trim());
+      if (l && !rent.value && kind === 'location' && l.deal === 'location' && l.price) { rent.value = l.price; showSummary(); }
+    });
+    const kindSeg = isNew ? el('div', { class: 'seg', role: 'group', 'aria-label': 'Type de dossier' }, ['location', 'achat'].map(k => el('button', {
+      type: 'button', 'aria-pressed': String(kind === k), text: k === 'location' ? 'Location' : 'Achat',
+      onclick: () => { kind = k; openTenantSheet(null, collect()); }
+    }))) : null;
+    const err = el('p', { class: 'note error', hidden: true });
+    const fail = e => { err.textContent = e.message; err.hidden = false; err.scrollIntoView({ block: 'nearest' }); };
+    const body = () => {
+      const b = { first: first.value, last: last.value, phone: phone.value, interior: interior.value, zone: zone.value, rent: rent.value === '' ? '' : +rent.value, start: start.value, notes: notes.value };
+      const l = catalog.find(x => x.name === interior.value.trim());
+      b.listing = l ? l.id : '';
+      if (isNew) { b.kind = kind; if (kind === 'location') b.weeks = +weeks.value; }
+      return b;
+    };
+    const saveBtn = el('button', {
+      type: 'button', class: 'btn primary', id: 'tSave', text: isNew ? 'Enregistrer le dossier' : 'Enregistrer', onclick: async () => {
+        err.hidden = true; saveBtn.disabled = true;
+        try {
+          adoptTenants(await api(isNew ? 'POST' : 'PATCH', isNew ? '/api/tenants' : '/api/tenants/' + encodeURIComponent(t.id), body()));
+          closeSheet();
+          toast(isNew ? 'Dossier de ' + first.value.trim() + ' ' + last.value.trim() + ' enregistré.' : 'Dossier mis à jour.');
+        } catch (e) { fail(e); }
+        saveBtn.disabled = false;
+      }
+    });
+    const kids = [lists, kindSeg,
+      el('div', { class: 'row2' }, [field('Prénom', first), field('Nom', last)]),
+      field('Numéro de téléphone', phone),
+      field('Intérieur', interior, 'Un bien du catalogue ou n’importe quel autre intérieur.'),
+      field('Zone de San Andreas', zone),
+      kind === 'achat' ? field('Prix de vente ($)', rent) : field('Loyer par semaine ($)', rent),
+      isNew && kind === 'location' ? el('div', { class: 'row2' }, [field('Semaines payées', weeks), field('Date d’entrée', start)])
+        : field(kind === 'achat' ? 'Date de l’achat' : 'Date d’entrée', start, !isNew && kind === 'location' ? 'Les semaines payées comptent à partir de cette date.' : null),
+      summary,
+      field('Notes', notes),
+      err];
+    if (!isNew) kids.unshift(el('div', { class: 'tsheet-status ts lv-' + tenantState(t).code }, tenantStatus(t, tenantState(t))));
+    if (!isNew && t.kind === 'location') kids.push(paymentsBlock(t, reopen));
+    const foot = [saveBtn];
+    if (!isNew && !t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Clôturer le dossier', onclick: () => archiveTenant(t, true) }));
+    if (!isNew && t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Rouvrir le dossier', onclick: () => archiveTenant(t, false) }));
+    if (!isNew && t.archived && isAdmin()) foot.push(el('button', { type: 'button', class: 'btn danger', text: 'Supprimer', onclick: () => deleteTenant(t) }));
+    openSheet(isNew ? 'Nouveau dossier' : fullName(t), kids.flat(), foot);
+    showSummary();
+    // le curseur va dans « Prénom », sauf si on a déjà cliqué dans un autre champ
+    if (isNew && !draft) setTimeout(() => { const a = document.activeElement; if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) first.focus(); }, 50);
+  }
+  function paymentsBlock(t, reopen) {
+    const pays = (t.payments || []).slice().sort((a, b) => (b.date + b.at) < (a.date + a.at) ? -1 : 1);
+    return el('div', { class: 'paylist' }, [
+      el('h4', { class: 'subhead', text: 'Paiements' }),
+      pays.length ? el('ul', {}, pays.map(p => el('li', {}, [
+        el('span', { text: frDate(p.date) }),
+        el('span', { text: weeksTxt(p.weeks) }),
+        el('b', { text: usd(p.amount) }),
+        el('small', { text: 'par ' + p.by }),
+        el('button', {
+          type: 'button', class: 'iconbtn sm', 'aria-label': 'Retirer ce paiement', title: 'Retirer ce paiement (erreur de saisie)', html: ICON.trash, onclick: async () => {
+            if (!(await confirmBox('Retirer ce paiement ?', weeksTxt(p.weeks) + ' payées le ' + frDate(p.date) + ' (' + usd(p.amount) + '). À faire seulement en cas d’erreur de saisie.', 'Retirer'))) { reopen(); return; }
+            try { adoptTenants(await api('DELETE', '/api/tenants/' + encodeURIComponent(t.id) + '/payments/' + encodeURIComponent(p.id))); toast('Paiement retiré.'); }
+            catch (e) { toast(e.message, 4500); }
+            const nt = (tenants.items || []).find(x => x.id === t.id); if (nt) openTenantSheet(nt);
+          }
+        })
+      ]))) : el('p', { class: 'help', text: 'Aucun paiement.' })
+    ]);
+  }
+  async function archiveTenant(t, on) {
+    if (on && !(await confirmBox('Clôturer le dossier de ' + fullName(t) + ' ?', 'À faire quand la location est terminée. Le dossier reste dans « Dossiers clôturés » et peut être rouvert.', 'Clôturer'))) { openTenantSheet(t); return; }
+    try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { archived: on })); closeSheet(); toast(on ? 'Dossier clôturé.' : 'Dossier rouvert.'); }
+    catch (e) { toast(e.message, 4500); }
+  }
+  async function deleteTenant(t) {
+    if (!(await confirmBox('Supprimer le dossier de ' + fullName(t) + ' ?', 'Il disparaît pour de bon, avec ses paiements.', 'Supprimer'))) { openTenantSheet(t); return; }
+    try { adoptTenants(await api('DELETE', '/api/tenants/' + encodeURIComponent(t.id))); closeSheet(); toast('Dossier supprimé.'); }
+    catch (e) { toast(e.message, 4500); }
+  }
+  // ---- paiement reçu : on propose ce qu'il faut pour être à jour
+  function openPaySheet(t) {
+    const s = tenantState(t);
+    const weeks = el('input', { id: 'payWeeks', type: 'number', min: 1, max: 52, step: 1, value: String(Math.max(1, s.level || 1)) });
+    const date = el('input', { id: 'payDate', type: 'date', value: todayStr() });
+    const info = el('p', { class: 'tsum' });
+    const quick = el('div', { class: 'seg' }, [1, 2, 3, 4].map(n => el('button', { type: 'button', text: String(n), onclick: () => { weeks.value = String(n); show(); } })));
+    const show = () => {
+      const w = Math.max(1, Math.round(+weeks.value || 1));
+      quick.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(+b.textContent === w)));
+      const to = dayNum(t.start) + 7 * (s.weeks + w);
+      info.textContent = 'Montant : ' + usd(w * t.rent) + '. Après ce paiement, ' + t.first + ' sera payé jusqu’au ' + frDate(dayStr(to - 1)) + (to <= dayNum(todayStr()) ? ' : il restera en retard.' : '.');
+      ok.textContent = 'Encaisser ' + usd(w * t.rent);
+    };
+    const err = el('p', { class: 'note error', hidden: true });
+    const ok = el('button', {
+      type: 'button', class: 'btn primary', id: 'paySave', onclick: async () => {
+        err.hidden = true; ok.disabled = true;
+        try {
+          const w = Math.round(+weeks.value);
+          adoptTenants(await api('POST', '/api/tenants/' + encodeURIComponent(t.id) + '/payments', { weeks: w, date: date.value }));
+          closeSheet();
+          const nt = (tenants.items || []).find(x => x.id === t.id), ns = nt ? tenantState(nt) : null;
+          toast('Paiement de ' + fullName(t) + ' enregistré' + (ns && ns.code === 'ok' ? ' : à jour jusqu’au ' + frDate(ns.paidTo) + '.' : '.'), 4500);
+        } catch (e) { err.textContent = e.message; err.hidden = false; }
+        ok.disabled = false;
+      }
+    });
+    weeks.addEventListener('input', show);
+    openSheet('Paiement reçu', [
+      el('div', { class: 'tsheet-who' }, [el('b', { text: fullName(t) }), el('small', { text: t.interior + ', ' + t.zone + ' · ' + usd(t.rent) + ' par semaine' })]),
+      el('div', { class: 'tsheet-status ts lv-' + s.code }, tenantStatus(t, s)),
+      el('div', { class: 'field' }, [el('span', { text: 'Semaines payées' }), el('div', { class: 'payweeks' }, [quick, weeks])]),
+      field('Date du paiement', date),
+      info, err
+    ], [ok]);
+    show();
+  }
+
   // ------------------------------------------------------------------ navigation
   function route() {
     const h = decodeURIComponent(location.hash.slice(1));
@@ -2531,6 +2966,7 @@
       if (page === 'catalogue') state.filter.type = typeFromSlug(parts[1] || '') || 'all';
       if (page === 'decorateurs') decoPage = parts[1] || null;
       if (page === 'avis') loadReviews();
+      if (page === 'locataires') { tenants.view = TENANT_VIEWS[parts[1]] ? parts[1] : 'tous'; loadTenants(); }
       lastPageHash = '#/' + (page === 'accueil' ? '' : parts.join('/'));
       closeVisit();
       showPage(page);

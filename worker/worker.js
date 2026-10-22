@@ -115,6 +115,7 @@ async function route(request, env, ctx) {
     if (name && rest.length === 1 && m === 'PATCH') return updateStaff(request, env, me, name);
     if (name && rest.length === 1 && m === 'DELETE') return deleteStaff(env, me, name);
   }
+  if (path === '/api/tenants' || path.startsWith('/api/tenants/')) return tenantsApi(request, env, me, path, m);
   throw new HttpError(404, 'not_found', 'Adresse inconnue.');
 }
 
@@ -802,4 +803,124 @@ async function setPhoto(request, env, me, name, remove, kind) {
   if (old && !decos.some(x => imagesOf(x).includes(old))) await env.DB.delete(old);
   if (name !== me.username) await addLog(env, me.username, [(remove ? 'a retiré ' : 'a changé ') + what + ' de ' + name]);
   return json({ ok: true, user: publicUser(u) });
+}
+
+// ------------------------------------------------------------------ suivi des locataires (gérants et admins seulement)
+// Rangé à part du catalogue public (clé « tenants ») : jamais envoyé aux visiteurs.
+// Un dossier = une personne qui loue ou achète un bien. Pour une location, chaque paiement couvre des semaines
+// qui se suivent depuis la date d'entrée : payé jusqu'au = entrée + 7 jours × semaines payées.
+const TENANT_ROLES = ['admin', 'gerant'];
+const KINDS = ['location', 'achat'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function cleanDate(v, what) {
+  const s = String(v == null ? '' : v).trim();
+  const d = DATE_RE.test(s) ? new Date(s + 'T00:00:00Z') : null;
+  if (!d || isNaN(d) || d.toISOString().slice(0, 10) !== s || s < '2020-01-01' || s > '2100-12-31') bad(what + ' : date non valable.');
+  return s;
+}
+const cleanLine = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
+function cleanMoney(v, what) {
+  const n = Math.round(Number(v));
+  if (v === '' || v === null || v === undefined || !isFinite(n) || n < 0 || n > 1e9) bad(what + ' : montant non valable.');
+  return n;
+}
+function cleanWeeks(v) {
+  const n = Math.round(Number(v));
+  if (!isFinite(n) || n < 1 || n > 52) bad('Nombre de semaines non valable (de 1 à 52).');
+  return n;
+}
+const tenantName = t => (t.first + ' ' + t.last).trim();
+const money = n => Math.round(n).toLocaleString('fr-FR') + ' $';
+// champs communs à la création et à la modification
+function tenantFields(t, body, isNew) {
+  const need = (k, label, max) => {
+    if (body[k] === undefined && !isNew) return;
+    const v = cleanLine(body[k], max);
+    if (!v) bad(label + ' : à remplir.');
+    t[k] = v;
+  };
+  need('first', 'Prénom', 40); need('last', 'Nom', 40);
+  need('interior', 'Intérieur', 60); need('zone', 'Zone', 40);
+  if (body.phone !== undefined || isNew) {
+    const ph = cleanPhone(body.phone);
+    if (!ph) bad('Numéro de téléphone : à remplir.');
+    t.phone = ph;
+  }
+  if (isNew) {
+    if (!KINDS.includes(body.kind)) bad('Choisis « Location » ou « Achat ».');
+    t.kind = body.kind;
+  }
+  if (body.rent !== undefined || isNew) t.rent = cleanMoney(body.rent, t.kind === 'achat' ? 'Prix' : 'Loyer');
+  if (body.start !== undefined || isNew) t.start = cleanDate(body.start, t.kind === 'achat' ? 'Date de l’achat' : 'Date d’entrée');
+  if (body.listing !== undefined) { const l = cleanLine(body.listing, 60); if (/^[a-z0-9-]{1,60}$/.test(l)) t.listing = l; else delete t.listing; }
+  if (body.notes !== undefined) { const n = String(body.notes == null ? '' : body.notes).trim().slice(0, 400); if (n) t.notes = n; else delete t.notes; }
+}
+async function tenantsApi(request, env, me, path, m) {
+  if (!TENANT_ROLES.includes(me.role)) deny('Le suivi des locataires est réservé aux gérants et aux admins.');
+  const rest = path === '/api/tenants' ? [] : path.slice('/api/tenants/'.length).split('/').map(x => decodeURIComponent(x));
+  const store = await getJSON(env, 'tenants', { items: [] });
+  if (!Array.isArray(store.items)) store.items = [];
+  const now = new Date().toISOString();
+  const done = async logs => {
+    await env.DB.put('tenants', JSON.stringify(store));
+    await addLog(env, me.username, logs);
+    return json({ items: store.items });
+  };
+  if (!rest.length) {
+    if (m === 'GET') return json({ items: store.items });
+    if (m === 'POST') {
+      const body = await readJson(request);
+      if (store.items.length >= 2000) bad('Trop de dossiers.');
+      const t = { id: 't' + rid(10), created: now, by: me.username, payments: [] };
+      tenantFields(t, body, true);
+      if (t.kind === 'location') {
+        const weeks = cleanWeeks(body.weeks);
+        t.payments.push({ id: 'p' + rid(8), date: t.start, weeks, amount: t.rent * weeks, by: me.username, at: now });
+      }
+      store.items.unshift(t);
+      return done(['a ajouté le dossier de ' + tenantName(t) + ' (' + (t.kind === 'achat' ? 'achat' : 'location') + ' : ' + t.interior + ', ' + t.zone + ')']);
+    }
+  }
+  const t = store.items.find(x => x.id === rest[0]);
+  if (!t) throw new HttpError(404, 'not_found', 'Dossier introuvable (il a peut-être été supprimé).');
+  const who = tenantName(t);
+  if (rest.length === 1 && m === 'PATCH') {
+    const body = await readJson(request);
+    const logs = [];
+    const before = JSON.stringify(t);
+    tenantFields(t, body, false);
+    if (JSON.stringify(t) !== before) logs.push('a modifié le dossier de ' + tenantName(t));
+    // messages copiés : « averti le … » (2 semaines) et « avis d'expulsion le … » (3 semaines)
+    if (body.warned === true) { t.warned = { at: now, by: me.username }; logs.push('a averti ' + who + ' (2 semaines de retard)'); }
+    if (body.evicted === true) { t.evicted = { at: now, by: me.username }; logs.push('a émis un avis d’expulsion pour ' + who); }
+    if (body.archived === true && !t.archived) { t.archived = { at: now, by: me.username }; logs.push('a clôturé le dossier de ' + who); }
+    if (body.archived === false && t.archived) { delete t.archived; logs.push('a rouvert le dossier de ' + who); }
+    return done(logs);
+  }
+  if (rest.length === 1 && m === 'DELETE') {
+    if (me.role !== 'admin') deny('Seul un admin peut supprimer un dossier.');
+    if (!t.archived) bad('Clôture d’abord le dossier : seul un dossier clôturé peut être supprimé.');
+    store.items = store.items.filter(x => x !== t);
+    return done(['a supprimé le dossier de ' + who]);
+  }
+  if (rest[1] === 'payments') {
+    if (t.kind !== 'location') bad('Un achat n’a pas de loyer à encaisser.');
+    if (rest.length === 2 && m === 'POST') {
+      const body = await readJson(request);
+      const weeks = cleanWeeks(body.weeks);
+      const date = cleanDate(body.date, 'Date du paiement');
+      const amount = body.amount === undefined ? t.rent * weeks : cleanMoney(body.amount, 'Montant');
+      // (on ne jette jamais d'anciens paiements : ils comptent dans « payé jusqu'au »)
+      if (t.payments.length >= 1000) bad('Trop de paiements sur ce dossier : ouvre un nouveau dossier.');
+      t.payments.push({ id: 'p' + rid(8), date, weeks, amount, by: me.username, at: now });
+      return done(['a encaissé ' + weeks + (weeks > 1 ? ' semaines' : ' semaine') + ' de loyer de ' + who + ' (' + money(amount) + ')']);
+    }
+    if (rest.length === 3 && m === 'DELETE') {
+      const pay = t.payments.find(x => x.id === rest[2]);
+      if (!pay) throw new HttpError(404, 'not_found', 'Paiement introuvable.');
+      t.payments = t.payments.filter(x => x !== pay);
+      return done(['a retiré un paiement de ' + who + ' (' + pay.weeks + (pay.weeks > 1 ? ' semaines' : ' semaine') + ', ' + money(pay.amount) + ')']);
+    }
+  }
+  throw new HttpError(404, 'not_found', 'Adresse inconnue.');
 }
