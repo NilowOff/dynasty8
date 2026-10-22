@@ -830,6 +830,8 @@ function cleanWeeks(v) {
   return n;
 }
 const tenantName = t => (t.first + ' ' + t.last).trim();
+// dans l'historique : nom + bien, pour distinguer deux dossiers de la même personne
+const tenantLabel = t => tenantName(t) + ' (' + t.interior + (t.zone ? ', ' + t.zone : '') + ')';
 const money = n => Math.round(n).toLocaleString('fr-FR') + ' $';
 // champs communs à la création et à la modification
 function tenantFields(t, body, isNew) {
@@ -883,15 +885,15 @@ async function tenantsApi(request, env, me, path, m) {
   }
   const t = store.items.find(x => x.id === rest[0]);
   if (!t) throw new HttpError(404, 'not_found', 'Dossier introuvable (il a peut-être été supprimé).');
-  const who = tenantName(t);
+  const who = tenantLabel(t);
   if (rest.length === 1 && m === 'PATCH') {
     const body = await readJson(request);
     const logs = [];
     const before = JSON.stringify(t);
     tenantFields(t, body, false);
-    if (JSON.stringify(t) !== before) logs.push('a modifié le dossier de ' + tenantName(t));
+    if (JSON.stringify(t) !== before) logs.push('a modifié le dossier de ' + tenantLabel(t));
     // messages copiés : « averti le … » (2 semaines) et « avis d'expulsion le … » (3 semaines)
-    if (body.warned === true) { t.warned = { at: now, by: me.username }; logs.push('a averti ' + who + ' (2 semaines de retard)'); }
+    if (body.warned === true) { t.warned = { at: now, by: me.username }; logs.push('a averti ' + who + ' : 2 semaines de retard'); }
     if (body.evicted === true) { t.evicted = { at: now, by: me.username }; logs.push('a émis un avis d’expulsion pour ' + who); }
     if (body.archived === true && !t.archived) { t.archived = { at: now, by: me.username }; logs.push('a clôturé le dossier de ' + who); }
     if (body.archived === false && t.archived) { delete t.archived; logs.push('a rouvert le dossier de ' + who); }
@@ -913,13 +915,13 @@ async function tenantsApi(request, env, me, path, m) {
       // (on ne jette jamais d'anciens paiements : ils comptent dans « payé jusqu'au »)
       if (t.payments.length >= 1000) bad('Trop de paiements sur ce dossier : ouvre un nouveau dossier.');
       t.payments.push({ id: 'p' + rid(8), date, weeks, amount, by: me.username, at: now });
-      return done(['a encaissé ' + weeks + (weeks > 1 ? ' semaines' : ' semaine') + ' de loyer de ' + who + ' (' + money(amount) + ')']);
+      return done(['a encaissé ' + weeks + (weeks > 1 ? ' semaines' : ' semaine') + ' de loyer de ' + who + ' : ' + money(amount)]);
     }
     if (rest.length === 3 && m === 'DELETE') {
       const pay = t.payments.find(x => x.id === rest[2]);
       if (!pay) throw new HttpError(404, 'not_found', 'Paiement introuvable.');
       t.payments = t.payments.filter(x => x !== pay);
-      return done(['a retiré un paiement de ' + who + ' (' + pay.weeks + (pay.weeks > 1 ? ' semaines' : ' semaine') + ', ' + money(pay.amount) + ')']);
+      return done(['a retiré un paiement de ' + who + ' : ' + pay.weeks + (pay.weeks > 1 ? ' semaines' : ' semaine') + ', ' + money(pay.amount)]);
     }
   }
   throw new HttpError(404, 'not_found', 'Adresse inconnue.');

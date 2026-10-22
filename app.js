@@ -2574,6 +2574,8 @@
   const frStamp = iso => frDate(localDay(new Date(iso)));
   const usd = n => nf.format(Math.round(n || 0)) + ' $';
   const fullName = t => t.first + ' ' + t.last;
+  // nom + bien : deux dossiers de la même personne (même nom, même numéro) restent faciles à distinguer
+  const tenantLabel = t => fullName(t) + ' (' + t.interior + (t.zone ? ', ' + t.zone : '') + ')';
   const weeksTxt = n => n + (n > 1 ? ' semaines' : ' semaine');
   const searchKey = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
@@ -2793,7 +2795,7 @@
   async function copyTenantMessage(t, kind) {
     const s = tenantState(t);
     const ok = await copyText(kind === 'warned' ? warningText(t, s) : evictionText(t, s), kind === 'warned' ? 'Avertissement' : 'Avis d’expulsion');
-    if (ok) toast((kind === 'warned' ? 'Avertissement' : 'Avis d’expulsion') + ' de ' + fullName(t) + ' copié. Colle-le dans le téléphone en jeu ou sur Discord.', 4500);
+    if (ok) toast((kind === 'warned' ? 'Avertissement' : 'Avis d’expulsion') + ' de ' + tenantLabel(t) + ' copié. Colle-le dans le téléphone en jeu ou sur Discord.', 4500);
     try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { [kind]: true })); } catch (e) { toast(e.message, 4500); }
   }
   async function copyGovernment(list) {
@@ -2846,6 +2848,17 @@
       type: 'button', 'aria-pressed': String(kind === k), text: k === 'location' ? 'Location' : 'Achat',
       onclick: () => { kind = k; openTenantSheet(null, collect()); }
     }))) : null;
+    // la même personne (nom ou numéro) a déjà un autre dossier : on le dit, chaque dossier reste séparé
+    const twins = el('p', { class: 'note twins', hidden: true });
+    const showTwins = () => {
+      const nm = searchKey(first.value + ' ' + last.value), ph = phone.value.replace(/\D/g, '');
+      const others = (tenants.items || []).filter(x => (!t || x.id !== t.id) && !x.archived &&
+        ((first.value.trim() && last.value.trim() && searchKey(x.first + ' ' + x.last) === nm) || (ph.length >= 3 && String(x.phone).replace(/\D/g, '') === ph)));
+      twins.hidden = !others.length;
+      if (others.length) twins.textContent = (others.length > 1 ? 'Même personne que ' + others.length + ' autres dossiers : ' : 'Même personne qu’un autre dossier : ') +
+        others.map(x => x.interior + (x.zone ? ', ' + x.zone : '')).join(' ; ') + '. Chaque dossier est séparé, avec ses propres paiements et ses propres retards.';
+    };
+    [first, last, phone].forEach(x => x.addEventListener('input', showTwins));
     const err = el('p', { class: 'note error', hidden: true });
     const fail = e => { err.textContent = e.message; err.hidden = false; err.scrollIntoView({ block: 'nearest' }); };
     const body = () => {
@@ -2861,7 +2874,7 @@
         try {
           adoptTenants(await api(isNew ? 'POST' : 'PATCH', isNew ? '/api/tenants' : '/api/tenants/' + encodeURIComponent(t.id), body()));
           closeSheet();
-          toast(isNew ? 'Dossier de ' + first.value.trim() + ' ' + last.value.trim() + ' enregistré.' : 'Dossier mis à jour.');
+          toast(isNew ? 'Dossier de ' + first.value.trim() + ' ' + last.value.trim() + ' (' + interior.value.trim() + ') enregistré.' : 'Dossier de ' + tenantLabel(t) + ' mis à jour.');
         } catch (e) { fail(e); }
         saveBtn.disabled = false;
       }
@@ -2869,6 +2882,7 @@
     const kids = [lists, kindSeg,
       el('div', { class: 'row2' }, [field('Prénom', first), field('Nom', last)]),
       field('Numéro de téléphone', phone),
+      twins,
       field('Intérieur', interior, 'Un bien du catalogue ou n’importe quel autre intérieur.'),
       field('Zone de San Andreas', zone),
       kind === 'achat' ? field('Prix de vente ($)', rent) : field('Loyer par semaine ($)', rent),
@@ -2883,7 +2897,8 @@
     if (!isNew && !t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Clôturer le dossier', onclick: () => archiveTenant(t, true) }));
     if (!isNew && t.archived) foot.push(el('button', { type: 'button', class: 'btn', text: 'Rouvrir le dossier', onclick: () => archiveTenant(t, false) }));
     if (!isNew && t.archived && isAdmin()) foot.push(el('button', { type: 'button', class: 'btn danger', text: 'Supprimer', onclick: () => deleteTenant(t) }));
-    openSheet(isNew ? 'Nouveau dossier' : fullName(t), kids.flat(), foot);
+    openSheet(isNew ? 'Nouveau dossier' : fullName(t) + ' · ' + t.interior, kids.flat(), foot);
+    showTwins();
     showSummary();
     // le curseur va dans « Prénom », sauf si on a déjà cliqué dans un autre champ
     if (isNew && !draft) setTimeout(() => { const a = document.activeElement; if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) first.focus(); }, 50);
@@ -2909,12 +2924,12 @@
     ]);
   }
   async function archiveTenant(t, on) {
-    if (on && !(await confirmBox('Clôturer le dossier de ' + fullName(t) + ' ?', 'À faire quand la location est terminée. Le dossier reste dans « Dossiers clôturés » et peut être rouvert.', 'Clôturer'))) { openTenantSheet(t); return; }
+    if (on && !(await confirmBox('Clôturer le dossier de ' + tenantLabel(t) + ' ?', 'À faire quand la location est terminée. Le dossier reste dans « Dossiers clôturés » et peut être rouvert.', 'Clôturer'))) { openTenantSheet(t); return; }
     try { adoptTenants(await api('PATCH', '/api/tenants/' + encodeURIComponent(t.id), { archived: on })); closeSheet(); toast(on ? 'Dossier clôturé.' : 'Dossier rouvert.'); }
     catch (e) { toast(e.message, 4500); }
   }
   async function deleteTenant(t) {
-    if (!(await confirmBox('Supprimer le dossier de ' + fullName(t) + ' ?', 'Il disparaît pour de bon, avec ses paiements.', 'Supprimer'))) { openTenantSheet(t); return; }
+    if (!(await confirmBox('Supprimer le dossier de ' + tenantLabel(t) + ' ?', 'Il disparaît pour de bon, avec ses paiements.', 'Supprimer'))) { openTenantSheet(t); return; }
     try { adoptTenants(await api('DELETE', '/api/tenants/' + encodeURIComponent(t.id))); closeSheet(); toast('Dossier supprimé.'); }
     catch (e) { toast(e.message, 4500); }
   }
@@ -2941,7 +2956,7 @@
           adoptTenants(await api('POST', '/api/tenants/' + encodeURIComponent(t.id) + '/payments', { weeks: w, date: date.value }));
           closeSheet();
           const nt = (tenants.items || []).find(x => x.id === t.id), ns = nt ? tenantState(nt) : null;
-          toast('Paiement de ' + fullName(t) + ' enregistré' + (ns && ns.code === 'ok' ? ' : à jour jusqu’au ' + frDate(ns.paidTo) + '.' : '.'), 4500);
+          toast('Paiement de ' + tenantLabel(t) + ' enregistré' + (ns && ns.code === 'ok' ? ' : à jour jusqu’au ' + frDate(ns.paidTo) + '.' : '.'), 4500);
         } catch (e) { err.textContent = e.message; err.hidden = false; }
         ok.disabled = false;
       }
