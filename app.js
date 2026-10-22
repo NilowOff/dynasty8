@@ -7,7 +7,10 @@
   // serveur de l'agence (comptes employés, catalogue, images des pièces) : adresse dans <meta name="d8-api">
   const API = ((document.querySelector('meta[name="d8-api"]') || {}).content || '').trim().replace(/\/+$/, '');
   const SHARE_BASE = API ? location.origin + location.pathname.replace(/index\.html?$/i, '') : 'https://claude.ai/artifact/7eJ2mP66hxVcGT49Gkc4ww';
-  const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant', decorateur: 'Décorateur' };
+  const ROLE_NAMES = { admin: 'Admin', gerant: 'Gérant', employe: 'Employé', decorateur: 'Décorateur' };
+  // un décorateur est « indépendant », sauf s'il est coché « employé Dynasty 8 » (il a alors aussi les droits d'un employé)
+  const roleLabel = u => !u ? '' : u.role === 'decorateur' ? (u.employee ? 'Décorateur et employé Dynasty 8' : 'Décorateur indépendant') : (ROLE_NAMES[u.role] || u.role);
+  const roleShort = u => !u ? '' : u.role === 'decorateur' ? (u.employee ? 'Décorateur · employé D8' : 'Décorateur indépendant') : (ROLE_NAMES[u.role] || u.role);
   const TYPES = ['Maison', 'Appartement', 'Bureaux', 'Entrepôt', 'Motel/Hôtel', 'Location Pro', 'Intérieur vide'];
   const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
   const STATUSES = { disponible: 'Disponible', reserve: 'Réservé', vendu: 'Vendu', loue: 'Loué' };
@@ -170,19 +173,22 @@
     } else a.textContent = initials(name);
     return a;
   }
-  // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé
   // droits : l'admin peut tout ; le gérant crée des biens et des pièces et modifie ce qu'il a créé ;
-  // le décorateur ne touche qu'aux décorations de sa propre catégorie
+  // l'employé crée des biens et complète ceux qu'il a créés ; le décorateur ne touche qu'aux décorations de sa catégorie
+  // (coché « employé Dynasty 8 », il a en plus les droits d'un employé). Personne d'autre que l'admin ne supprime un bien.
   const me = () => state.user ? state.user.username : null;
   const myUid = () => state.user ? state.user.uid : null;
   const role = () => state.user ? state.user.role : 'admin';
   const isAdmin = () => role() === 'admin';
   const isGerant = () => role() === 'gerant';
   const isDeco = () => role() === 'decorateur';
+  const isEmployee = () => role() === 'employe' || (isDeco() && !!state.user && state.user.employee === true);
+  const canNewListing = () => isAdmin() || isGerant() || isEmployee();
   const ownDeco = l => !!l && isDeco() && !!l.deco && l.deco === myUid();
-  const canEditListing = l => isAdmin() || (isGerant() && !!l && !l.deco && l.createdBy === me()) || ownDeco(l);
+  const ownListing = l => !!l && !l.deco && l.createdBy === me();
+  const canEditListing = l => isAdmin() || ((isGerant() || isEmployee()) && ownListing(l)) || ownDeco(l);
   const canEditPoint = (l, p) => canEditListing(l) || (isGerant() && !!l && !l.deco && !!p && p.createdBy === me());
-  const canAddRoom = l => isAdmin() || (isGerant() && !!l && !l.deco) || ownDeco(l);
+  const canAddRoom = l => isAdmin() || (isGerant() && !!l && !l.deco) || (isEmployee() && ownListing(l)) || ownDeco(l);
   const canDeleteListing = l => isAdmin() || ownDeco(l);
   let savedKeysCache = { src: null, keys: null };
   function savedHas(...ids) {
@@ -466,11 +472,11 @@
   function updateStaffUI() {
     const u = state.user;
     const tag = $('agentTag');
-    if (tag) fill(tag, u ? [avatarEl(u.name || u.username, u.photo, 'xs'), u.username + ' (' + (ROLE_NAMES[u.role] || u.role) + ')'] : ['Mode agent']);
+    if (tag) fill(tag, u ? [avatarEl(u.name || u.username, u.photo, 'xs'), u.username + ' (' + roleShort(u) + ')'] : ['Mode agent']);
     if ($('staffBtn')) $('staffBtn').hidden = !(u && u.role === 'admin');
     if ($('histBtn')) $('histBtn').hidden = !(u && u.role === 'admin');
     if ($('accountBtn')) $('accountBtn').hidden = !u;
-    const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? ROLE_NAMES[u.role] : 'Mode agent';
+    const vt = document.querySelector('#vAgent .tag'); if (vt) vt.textContent = u ? roleShort(u) : 'Mode agent';
     // « Locataires » : dans le menu dès la connexion, sans passer par l'espace employé
     if (canTenants()) loadTenants(); else tenants.items = null;
     renderNav();
@@ -500,7 +506,7 @@
           if (s.user.role === 'decorateur') location.hash = '#/decorateurs/' + s.user.uid;
           else if (currentPage !== 'catalogue') location.hash = '#/catalogue';
         }
-        toast('Connecté : ' + s.user.username + ' (' + ROLE_NAMES[s.user.role] + ').');
+        toast('Connecté : ' + s.user.username + ' (' + roleLabel(s.user) + ').');
       } catch (e) { err.textContent = e.message; err.hidden = false; }
       btn.disabled = false;
     };
@@ -519,9 +525,12 @@
 
   const ROLE_HELP = {
     admin: 'Admin : tu peux tout faire, y compris gérer les comptes des employés et les pages du site.',
-    gerant: 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés ; tu ne peux rien supprimer.',
-    decorateur: 'Décorateur : tu as ta propre catégorie dans « Décorateurs ». Tu y crées, modifies et supprimes tes décorations, et tu ne touches pas au reste du site.'
+    gerant: 'Gérant : tu peux créer des biens, ajouter des pièces dans tous les biens et choisir la pièce de départ des visites. Tu modifies les biens et les pièces que tu as créés, et tu gères les locataires. Tu ne peux rien supprimer.',
+    employe: 'Employé : tu peux créer des biens et compléter ceux que tu as créés (infos, prix, pièces), et gérer les locataires (nouveaux dossiers, paiements, messages, clôture). Tu ne peux rien supprimer.',
+    decorateur: 'Décorateur indépendant : tu as ta propre catégorie dans « Décorateurs ». Tu y crées, modifies et supprimes tes décorations, et tu ne touches pas au reste du site.',
+    decoEmploye: 'Décorateur et employé Dynasty 8 : tu as ta catégorie dans « Décorateurs » (tu y crées, modifies et supprimes tes décorations), et en plus les droits d’un employé : créer des biens, compléter ceux que tu as créés et gérer les locataires. En dehors de tes décorations, tu ne peux rien supprimer.'
   };
+  const roleHelp = u => ROLE_HELP[u.role === 'decorateur' && u.employee ? 'decoEmploye' : u.role] || '';
   function openAccountSheet() {
     const u = state.user; if (!u) return;
     const cur = el('input', { id: 'pwCurrent', type: 'password', autocomplete: 'current-password' });
@@ -548,7 +557,7 @@
       openAccountSheet();
     };
     openSheet('Mon compte', [
-      photoBlock(u.name || u.username, u.photo, ROLE_NAMES[u.role],
+      photoBlock(u.name || u.username, u.photo, roleLabel(u),
         u.role === 'decorateur' ? 'Elle s’affiche sur ta carte dans « Décorateurs » et en haut de ta catégorie.' : 'Elle s’affiche dans la barre employé et dans la liste des comptes.',
         () => choosePhoto(async blob => afterPhoto(await api('PUT', '/api/me/photo', blob, 'image/jpeg')), openAccountSheet, 'Ma photo de profil'),
         async () => afterPhoto(await api('DELETE', '/api/me/photo'))),
@@ -561,8 +570,8 @@
         refreshData();
         return r.user.phone;
       }, 'Il s’affiche sous ta carte dans « Décorateurs » et en haut de ta catégorie, pour que les clients puissent t’appeler en jeu.') : null,
-      el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: ROLE_NAMES[u.role] })])]),
-      el('p', { class: 'help', text: ROLE_HELP[u.role] || '' }),
+      el('dl', { class: 'kv' }, [el('div', {}, [el('dt', { text: 'Identifiant' }), el('dd', { text: u.username })]), el('div', {}, [el('dt', { text: 'Grade' }), el('dd', { text: roleLabel(u) })])]),
+      el('p', { class: 'help', text: roleHelp(u) }),
       el('h4', { class: 'subhead', text: 'Changer mon mot de passe' }),
       field('Mot de passe actuel', cur), field('Nouveau mot de passe', nw, 'Au moins 8 caractères.'), field('Confirme le nouveau', nw2), msg
     ], [change, el('button', { type: 'button', class: 'btn danger', id: 'logoutBtn', text: 'Se déconnecter', onclick: logout })]);
@@ -583,9 +592,20 @@
           }
         }, Object.entries(ROLE_NAMES).map(([v, t]) => el('option', { value: v, text: t, selected: u.role === v })));
         const self = u.username === me();
+        const emp = u.role === 'decorateur' ? el('label', { class: 'checkline staffemp' }, [
+          el('input', {
+            type: 'checkbox', checked: !!u.employee, 'aria-label': 'Employé Dynasty 8 : ' + u.username, onchange: async e => {
+              err.hidden = true;
+              try {
+                render((await api('PATCH', '/api/staff/' + encodeURIComponent(u.username), { employee: e.target.checked })).users);
+                toast(e.target.checked ? (u.name || u.username) + ' est maintenant décorateur et employé Dynasty 8 : il a aussi les droits d’un employé.' : (u.name || u.username) + ' est maintenant décorateur indépendant.', 5000);
+                refreshData();
+              } catch (x) { showErr(x); e.target.checked = !e.target.checked; }
+            }
+          }), el('span', { text: 'Employé Dynasty 8' })]) : null;
         box.append(el('div', { class: 'staffitem' }, [
           avatarEl(u.name || u.username, u.photo),
-          el('div', {}, [el('b', { text: (u.name || u.username) + (self ? ' (toi)' : '') }), el('small', { text: 'Identifiant : ' + u.username })]),
+          el('div', {}, [el('b', { text: (u.name || u.username) + (self ? ' (toi)' : '') }), el('small', { text: 'Identifiant : ' + u.username }), u.role === 'decorateur' ? decoTag({ staff: !!u.employee }) : null, emp]),
           role,
           el('div', { class: 'acts' }, [
             iconBtn('pencil', 'Modifier le compte de ' + u.username, () => openResetSheet(u)),
@@ -600,26 +620,29 @@
     const nu = el('input', { id: 'staffUser', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', placeholder: 'ex. jean.dupont' });
     const np = el('input', { id: 'staffPass', type: 'text', autocomplete: 'off', spellcheck: 'false' });
     const nn = el('input', { id: 'staffName', autocomplete: 'off', placeholder: 'ex. Jean Dupont', maxlength: 40 });
-    const nr = el('select', { id: 'staffRole' }, [el('option', { value: 'gerant', text: 'Gérant' }), el('option', { value: 'decorateur', text: 'Décorateur' }), el('option', { value: 'admin', text: 'Admin' })]);
+    const nr = el('select', { id: 'staffRole' }, [el('option', { value: 'employe', text: 'Employé' }), el('option', { value: 'gerant', text: 'Gérant' }), el('option', { value: 'decorateur', text: 'Décorateur' }), el('option', { value: 'admin', text: 'Admin' })]);
+    const ne = el('input', { id: 'staffEmp', type: 'checkbox' });
+    const neLine = el('label', { class: 'checkline', hidden: true }, [ne, el('span', { text: 'Aussi employé du Dynasty 8 (sinon : décorateur indépendant)' })]);
+    nr.addEventListener('change', () => { neLine.hidden = nr.value !== 'decorateur'; });
     const add = el('button', { type: 'button', class: 'btn primary', id: 'staffAdd', html: ICON.plus + '<span>Créer le compte</span>' });
     const create = async () => {
       err.hidden = true; add.disabled = true;
       try {
-        render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value, name: nn.value.trim() })).users);
+        render((await api('POST', '/api/staff', { username: nu.value.trim(), password: np.value, role: nr.value, name: nn.value.trim(), employee: nr.value === 'decorateur' && ne.checked })).users);
         toast('Compte « ' + nu.value.trim().toLowerCase() + ' » créé. Donne-lui son identifiant et son mot de passe.' + (nr.value === 'decorateur' ? ' Sa catégorie apparaît dans « Décorateurs ».' : ''), 6000);
         if (nr.value === 'decorateur') refreshData();
-        nu.value = ''; np.value = ''; nn.value = '';
+        nu.value = ''; np.value = ''; nn.value = ''; ne.checked = false;
       } catch (x) { showErr(x); }
       add.disabled = false;
     };
     add.addEventListener('click', create);
     inputEnter([nu, np, nn], create);
     openSheet('Comptes des employés', [
-      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et ne peut rien supprimer. Décorateur : a sa propre catégorie dans « Décorateurs » et n’y gère que ses décorations.' }),
+      el('p', { class: 'help', text: 'Admin : a droit à tout. Gérant : crée des biens, ajoute des pièces dans tous les biens et choisit la pièce de départ des visites ; il modifie ce qu’il a créé et gère les locataires. Employé : crée des biens, complète ceux qu’il a créés et gère les locataires. Décorateur : a sa catégorie dans « Décorateurs » et n’y gère que ses décorations ; coché « Employé Dynasty 8 », il a en plus les droits d’un employé, sinon il est indiqué comme décorateur indépendant. Seul un admin peut supprimer un bien ou un dossier de locataire.' }),
       box, err,
       el('h4', { class: 'subhead', text: 'Nouveau compte' }),
       field('Identifiant', nu, 'Sert à se connecter.'), field('Nom affiché', nn, 'Ex. Jean Dupont. C’est le nom de la catégorie d’un décorateur.'),
-      field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr)
+      field('Mot de passe', np, 'Au moins 8 caractères. L’employé pourra le changer dans « Mon compte ».'), field('Grade', nr), neLine
     ], [add]);
     box.append(el('p', { class: 'help', text: 'Chargement…' }));
     try { render((await api('GET', '/api/staff')).users); } catch (x) { box.innerHTML = ''; showErr(x); }
@@ -649,7 +672,7 @@
       }
     });
     openSheet('Compte de ' + u.username, [
-      photoBlock(u.name || u.username, u.photo, ROLE_NAMES[u.role], u.role === 'decorateur' ? 'Elle s’affiche sur sa carte dans « Décorateurs ».' : null,
+      photoBlock(u.name || u.username, u.photo, roleLabel(u), u.role === 'decorateur' ? 'Elle s’affiche sur sa carte dans « Décorateurs ».' : null,
         () => choosePhoto(async blob => afterPhoto(await api('PUT', photoPath, blob, 'image/jpeg')), back, 'Photo de ' + (u.name || u.username)),
         async () => afterPhoto(await api('DELETE', photoPath))),
       u.role === 'decorateur' ? bannerBlock(decoBanner({ id: u.uid, banner: u.banner }), !!u.banner, null,
@@ -777,6 +800,8 @@
       err
     ], [ok, el('button', { type: 'button', class: 'btn', text: 'Annuler', onclick: back })]);
   }
+  // étiquette sous le nom d'un décorateur : employé du Dynasty 8 ou indépendant
+  const decoTag = x => el('span', { class: 'decotag' + (x.staff ? ' d8' : ''), text: x.staff ? 'Décorateur Dynasty 8' : 'Décorateur indépendant' });
   // fond de la carte d'un décorateur : son image de fond, sinon la couverture de sa dernière décoration
   function decoBanner(x) {
     if (x.banner) return mediaURL(x.banner);
@@ -902,7 +927,7 @@
     const pv = l => isNum(l.price) ? +l.price : isNum(l.priceMax) ? +l.priceMax : null;
     if (f.sort === 'recent') items.sort((a, b) => (b.order || 0) - (a.order || 0));
     else items.sort((a, b) => { const x = pv(a), y = pv(b); if (x === null) return 1; if (y === null) return -1; return f.sort === 'asc' ? x - y : y - x; });
-    if (state.agent && (isAdmin() || isGerant())) {
+    if (state.agent && canNewListing()) {
       grid.append(el('button', { type: 'button', class: 'card new', onclick: () => newListing() }, [
         el('div', {}, [el('div', { class: 'plus', html: ICON.plus }), el('span', { text: 'Nouveau bien' })])]));
     }
@@ -1380,7 +1405,7 @@
     let bar = $('vAgent');
     if (on && !bar) {
       bar = el('div', { id: 'vAgent', style: { position: 'absolute', zIndex: 7, top: 'calc(env(safe-area-inset-top, 0px) + 16px)', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '8px', alignItems: 'center', background: 'var(--sun)', color: 'var(--on-sun)', borderRadius: '999px', padding: '4px 4px 4px 12px', boxShadow: '0 6px 18px rgba(0,0,0,.3)' } }, [
-        el('span', { class: 'tag', text: state.user ? ROLE_NAMES[state.user.role] : 'Mode agent', style: { fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: '12px' } }),
+        el('span', { class: 'tag', text: state.user ? roleShort(state.user) : 'Mode agent', style: { fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: '12px' } }),
         el('button', { id: 'vSave', type: 'button', class: 'btn primary', text: 'Enregistrer', onclick: save, style: { minHeight: '32px' } })
       ]);
       $('visit').append(bar);
@@ -2279,6 +2304,7 @@
             el('span', { class: 'who' }, [
               avatarEl(x.name, x.photo, 'deco'),
               el('b', { text: x.name }),
+              decoTag(x),
               el('small', { text: items.length ? items.length + (items.length > 1 ? ' décorations à visiter' : ' décoration à visiter') : 'Bientôt des décorations' }),
               el('span', { class: 'go', text: 'Voir ses décorations' })
             ])
@@ -2303,7 +2329,8 @@
           avatarEl(x.name, x.photo, 'xl'),
           el('div', {}, [
             el('h1', { text: x.name }),
-            el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Décorateur du Dynasty 8' }),
+            decoTag(x),
+            el('p', { class: 'sub', text: n ? n + (n > 1 ? ' décorations à visiter en 360°' : ' décoration à visiter en 360°') : 'Pas encore de décoration à visiter' }),
             phoneBtn(x, 'inline')
           ])
         ])
@@ -2552,11 +2579,11 @@
   };
 
   // ------------------------------------------------------------------ locataires
-  // Suivi des locations et des ventes, pour les gérants et les admins (données privées, gardées à part sur le serveur).
+  // Suivi des locations et des ventes, pour les employés du Dynasty 8 (données privées, gardées à part sur le serveur).
   // Location : chaque paiement couvre des semaines qui se suivent depuis la date d'entrée.
   //   premier jour non payé = entrée + 7 jours × semaines payées
   //   semaines de retard = semaines commencées depuis ce jour (1 = paiement attendu, 2 = avertissement, 3 et plus = expulsion)
-  const canTenants = () => !!state.user && (state.user.role === 'admin' || state.user.role === 'gerant');
+  const canTenants = () => !!state.user && (isAdmin() || isGerant() || isEmployee());
   const tenants = { items: null, loading: false, error: null, view: 'tous', q: '', at: 0 };
   const TENANT_VIEWS = { tous: 'Tous les dossiers', retard: '2 semaines de retard', expulsion: 'Avis d’expulsion', clotures: 'Dossiers clôturés' };
   const ZONES = ['Alta', 'Banham Canyon', 'Banning', 'Burton', 'Chamberlain Hills', 'Chumash', 'Cypress Flats', 'Davis', 'Del Perro', 'Downtown',
@@ -2623,7 +2650,7 @@
     tenants.items = r.items; tenants.at = Date.now();
     renderNav(); if (currentPage === 'locataires') renderTenants();
   }
-  // le menu « Locataires » : seulement pour les gérants et les admins connectés
+  // le menu « Locataires » : seulement pour les employés du Dynasty 8 connectés (pas les décorateurs indépendants)
   function renderTenantNav(link) {
     const nav = $('tenantNav'); if (!nav) return;
     nav.hidden = !canTenants();
@@ -2650,10 +2677,10 @@
       ])]);
       return;
     }
-    if (!canTenants()) { fill(box, [pageHead('Locataires', null), el('p', { class: 'note', text: 'Le suivi des locataires est réservé aux gérants et aux admins.' })]); return; }
+    if (!canTenants()) { fill(box, [pageHead('Locataires', null), el('p', { class: 'note', text: 'Le suivi des locataires est réservé aux employés du Dynasty 8.' })]); return; }
     const view = tenants.view;
     const head = el('div', { class: 'cat-head' }, [
-      el('div', {}, [el('h1', { text: 'Locataires' }), el('p', { class: 'sub', text: 'Suivi des locations et des ventes. Visible seulement par les gérants et les admins.' })]),
+      el('div', {}, [el('h1', { text: 'Locataires' }), el('p', { class: 'sub', text: 'Suivi des locations et des ventes. Visible seulement par les employés du Dynasty 8.' })]),
       el('button', { type: 'button', class: 'btn sun', id: 'tenantNew', html: ICON.plus + '<span>Nouveau dossier</span>', onclick: () => openTenantSheet(null) })
     ]);
     if (!tenants.items) { fill(box, [head, el('p', { class: 'empty', text: tenants.error || 'Chargement des dossiers…' })]); return; }
@@ -2729,7 +2756,7 @@
   }
 
   // ---- les messages à copier
-  const signature = () => (state.user.name || state.user.username) + ', ' + (ROLE_NAMES[state.user.role] || 'employé') + ' au Dynasty 8';
+  const signature = () => (state.user.name || state.user.username) + ', ' + (state.user.role === 'decorateur' ? 'Employé' : (ROLE_NAMES[state.user.role] || 'Employé')) + ' au Dynasty 8';
   function warningText(t, s) {
     return [
       'Bonjour ' + fullName(t) + ',',

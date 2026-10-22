@@ -1,4 +1,4 @@
-/* API Dynasty 8 : comptes employés (admin, gérant), catalogue et images des pièces.
+/* API Dynasty 8 : comptes (admin, gérant, employé, décorateur), catalogue et images des pièces.
    Cloudflare Worker avec un espace de stockage KV lié sous le nom « DB ».
    Clés KV : data (catalogue), staff (comptes), secret (clé de signature des sessions), media/… (images),
    media/staff/… (photos de profil des employés). */
@@ -8,8 +8,11 @@ const PHOTO_RE = /^media\/staff\/[a-z0-9-]{1,80}\.jpg$/;
 const STATIC_RE = /^[a-z0-9_-]{1,60}\.(jpg|png)$/i;
 const ID_RE = /^[a-z0-9-]{1,60}$/;
 const USER_RE = /^[a-z0-9._-]{3,24}$/;
-const ROLES = ['admin', 'gerant', 'decorateur'];
-const ROLE_LABEL = { admin: 'Admin', gerant: 'Gérant', decorateur: 'Décorateur' };
+const ROLES = ['admin', 'gerant', 'employe', 'decorateur'];
+const ROLE_LABEL = { admin: 'Admin', gerant: 'Gérant', employe: 'Employé', decorateur: 'Décorateur' };
+// employé du Dynasty 8 : grade « Employé », ou décorateur coché « employé Dynasty 8 » (les autres décorateurs sont indépendants)
+const isEmployee = u => u.role === 'employe' || (u.role === 'decorateur' && u.employee === true);
+const roleText = u => u.role === 'decorateur' ? (u.employee ? 'Décorateur et employé Dynasty 8' : 'Décorateur indépendant') : ROLE_LABEL[u.role];
 const rid = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => (b % 36).toString(36)).join('');
 const OLD_TYPES = { Bureau: 'Bureaux', Villa: 'Maison', Commerce: 'Location Pro', Entrepot: 'Entrepôt', Garage: 'Intérieur vide', Terrain: 'Intérieur vide' };
 const ITER = 5000;
@@ -170,12 +173,13 @@ async function save(request, env, me) {
   stampAuthors(cur, next, me);
   checkBases(cur, next);
   if (me.role === 'gerant') checkGerant(cur, next, me);
+  else if (me.role === 'employe') checkEmploye(cur, next, me);
   else if (me.role === 'decorateur') checkDecorateur(cur, next, me);
   const staffNow = await getStaff(env);
   next.decorators = computeDecorators(staffNow, next, cur.decorators);
 
   const deletes = Array.isArray(body.deletes) ? body.deletes : [];
-  if (deletes.length && me.role === 'gerant') deny('Un gérant ne peut rien supprimer.');
+  if (deletes.length && (me.role === 'gerant' || me.role === 'employe')) deny('Un ' + ROLE_LABEL[me.role].toLowerCase() + ' ne peut rien supprimer.');
   const now = new Date().toISOString();
   // biens supprimés : gardés dans la corbeille (avec leurs images) pour pouvoir les restaurer
   const removed = cur.listings.filter(l => !next.listings.some(x => x.id === l.id));
@@ -415,8 +419,9 @@ function stampAuthors(cur, next, me) {
       if (cl.deco) l.deco = cl.deco; else delete l.deco;
     } else {
       l.createdBy = me.username;
-      if (me.role === 'decorateur') l.deco = me.uid;
-      else if (me.role === 'gerant') delete l.deco;
+      // un décorateur crée ses décorations ; coché « employé Dynasty 8 », il peut aussi créer des biens du catalogue
+      if (me.role === 'decorateur') { if (!(me.employee === true && !l.deco)) l.deco = me.uid; }
+      else if (me.role === 'gerant' || me.role === 'employe') delete l.deco;
       else if (l.deco && !(cur.decorators || []).some(x => x.id === l.deco)) delete l.deco;
     }
     const curP = new Map((cl ? cl.points : []).map(p => [p.id, p]));
@@ -457,14 +462,35 @@ function checkGerant(cur, next, me) {
   }
 }
 
-// règles du décorateur : il crée, modifie et supprime ses propres décorations, et rien d'autre
+// règles de l'employé : il crée des biens et les complète (infos, prix, pièces), sans rien supprimer ; il ne touche pas aux biens des autres
+function checkEmploye(cur, next, me) {
+  if (!eq(cur.site === undefined ? null : cur.site, next.site === undefined ? null : next.site)) deny('Seul un admin peut modifier les pages du site.');
+  const nextL = new Map(next.listings.map(l => [l.id, l]));
+  for (const cl of cur.listings) {
+    const nl = nextL.get(cl.id);
+    if (!cl.deco && cl.createdBy === me.username) { checkOwnListing(cl, nl); continue; }
+    if (!nl) deny('Un employé ne peut pas supprimer un bien.');
+    if (!eq(cl, nl)) deny('Un employé ne peut modifier que les biens qu’il a créés (« ' + (cl.name || cl.id) + ' »).');
+  }
+}
+// sur un bien qu'on a créé soi-même (employé) : tout se modifie, mais rien ne se supprime
+function checkOwnListing(cl, nl) {
+  if (!nl) deny('Tu ne peux pas supprimer un bien : demande à un admin.');
+  const np = new Set(nl.points.map(p => p.id));
+  for (const cp of cl.points) if (!np.has(cp.id)) deny('Tu ne peux pas supprimer une pièce de « ' + (cl.name || cl.id) + ' » : demande à un admin.');
+}
+// règles du décorateur : il crée, modifie et supprime ses propres décorations ;
+// coché « employé Dynasty 8 », il a en plus les droits d'un employé (créer des biens du catalogue et les compléter)
 function checkDecorateur(cur, next, me) {
   if (!eq(cur.site === undefined ? null : cur.site, next.site === undefined ? null : next.site)) deny('Seul un admin peut modifier les pages du site.');
   const nextL = new Map(next.listings.map(l => [l.id, l]));
   for (const cl of cur.listings) {
     if (cl.deco === me.uid) continue;
     const nl = nextL.get(cl.id);
-    if (!nl || !eq(cl, nl)) deny('Un décorateur ne peut modifier que ses propres décorations (« ' + (cl.name || cl.id) + ' »).');
+    if (me.employee === true && !cl.deco && cl.createdBy === me.username) { checkOwnListing(cl, nl); continue; }
+    if (!nl || !eq(cl, nl)) deny(me.employee === true
+      ? 'Tu ne peux modifier que tes décorations et les biens que tu as créés (« ' + (cl.name || cl.id) + ' »).'
+      : 'Un décorateur ne peut modifier que ses propres décorations (« ' + (cl.name || cl.id) + ' »).');
   }
 }
 // chaque décoration est faite dans un intérieur du catalogue (bouton « Sans la déco » pendant la visite) :
@@ -490,17 +516,18 @@ function cleanPhone(v) {
   if (!okPhone(s)) bad('Numéro de téléphone non valable : seulement des chiffres (3 à 15), des espaces et + - . ( ).');
   return s;
 }
-function decoEntry(id, name, photo, banner, phone) {
+function decoEntry(id, name, photo, banner, phone, staffMember) {
   const x = { id, name };
+  if (staffMember === true) x.staff = true;   // décorateur et employé du Dynasty 8 (sinon : décorateur indépendant)
   if (okPhoto(photo)) x.photo = photo;
   if (okPhoto(banner)) x.banner = banner;   // image de fond de la carte du décorateur
   if (okPhone(phone)) x.phone = phone;
   return x;
 }
 function computeDecorators(staff, data, prev) {
-  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo, u.banner, u.phone));
+  const list = Object.values(staff.users).filter(u => u.role === 'decorateur' && u.uid).map(u => decoEntry(u.uid, u.name || u.username, u.photo, u.banner, u.phone, u.employee));
   const ids = new Set(list.map(x => x.id));
-  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo, x.banner, x.phone)); ids.add(x.id); } });
+  (prev || []).forEach(x => { if (!ids.has(x.id) && data.listings.some(l => l.deco === x.id)) { list.push(decoEntry(x.id, x.name, x.photo, x.banner, x.phone, x.staff)); ids.add(x.id); } });
   return list.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 // photos de profil et images de fond qui ne servent plus : ni à un compte, ni à une catégorie de décorateur
@@ -571,7 +598,7 @@ async function getStaff(env) {
   return staff;
 }
 const putStaff = (env, s) => env.DB.put('staff', JSON.stringify(s));
-const publicUser = u => ({ username: u.username, role: u.role, uid: u.uid, name: u.name || u.username, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null });
+const publicUser = u => ({ username: u.username, role: u.role, employee: u.role === 'decorateur' && u.employee === true, uid: u.uid, name: u.name || u.username, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null });
 
 const enc = new TextEncoder();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -685,18 +712,15 @@ async function changeOwnPassword(request, env, me) {
   if (!sameBytes(h, unb64(me.hash))) throw new HttpError(401, 'login', 'Mot de passe actuel incorrect.');
   checkNewPassword(body.password);
   const staff = await getStaff(env);
-  const nu = await makeUser(me.username, body.password, me.role, me.name);
-  nu.created = me.created; nu.uid = me.uid; nu.v = (me.v || 1) + 1;
-  if (me.photo) nu.photo = me.photo;
-  if (me.banner) nu.banner = me.banner;
-  if (me.phone) nu.phone = me.phone;
+  const fresh = await makeUser(me.username, body.password, me.role, me.name);
+  const nu = { ...me, salt: fresh.salt, hash: fresh.hash, v: (me.v || 1) + 1 };   // tout le reste du compte est gardé (photo, numéro, coche employé…)
   staff.users[me.username] = nu;
   await putStaff(env, staff);
   return json(await issueSession(env, nu));
 }
 async function listStaff(env) {
   const staff = await getStaff(env);
-  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, uid: u.uid, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
+  return json({ users: Object.values(staff.users).map(u => ({ username: u.username, name: u.name || u.username, role: u.role, employee: u.role === 'decorateur' && u.employee === true, uid: u.uid, photo: u.photo || null, banner: u.banner || null, phone: u.phone || null, created: u.created })).sort((a, b) => a.username.localeCompare(b.username)) });
 }
 async function createStaff(request, env, me) {
   const body = await readJson(request);
@@ -705,10 +729,12 @@ async function createStaff(request, env, me) {
   checkNewPassword(body.password);
   const staff = await getStaff(env);
   if (staff.users[username]) bad('Cet identifiant est déjà pris.');
-  staff.users[username] = await makeUser(username, body.password, body.role, cleanName(body.name, username));
+  const nu = await makeUser(username, body.password, body.role, cleanName(body.name, username));
+  if (body.role === 'decorateur' && body.employee === true) nu.employee = true;
+  staff.users[username] = nu;
   await putStaff(env, staff);
   await syncDecorators(env, staff);
-  await addLog(env, me.username, ['a créé le compte de ' + username + ' (' + ROLE_LABEL[body.role] + ')']);
+  await addLog(env, me.username, ['a créé le compte de ' + username + ' (' + roleText(nu) + ')']);
   return listStaff(env);
 }
 const adminCount = staff => Object.values(staff.users).filter(u => u.role === 'admin').length;
@@ -721,7 +747,13 @@ async function updateStaff(request, env, me, name) {
   if (body.role !== undefined) {
     if (!ROLES.includes(body.role)) bad('Grade inconnu.');
     if (u.role === 'admin' && body.role !== 'admin' && adminCount(staff) <= 1) bad('Il faut garder au moins un admin.');
-    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; logs.push('a changé le grade de ' + name + ' : ' + ROLE_LABEL[body.role]); }
+    if (u.role !== body.role) { u.role = body.role; u.v = (u.v || 1) + 1; if (u.role !== 'decorateur') delete u.employee; logs.push('a changé le grade de ' + name + ' : ' + ROLE_LABEL[body.role]); }
+  }
+  // coche « employé Dynasty 8 » d'un décorateur : il a alors aussi les droits d'un employé
+  if (body.employee !== undefined) {
+    if (u.role !== 'decorateur') bad('La coche « employé Dynasty 8 » ne concerne que les décorateurs.');
+    const on = body.employee === true;
+    if (on !== (u.employee === true)) { if (on) u.employee = true; else delete u.employee; logs.push(on ? 'a indiqué que ' + name + ' est aussi employé du Dynasty 8' : 'a indiqué que ' + name + ' est un décorateur indépendant'); }
   }
   if (body.name !== undefined) {
     const nn = cleanName(body.name, u.username);
@@ -809,7 +841,8 @@ async function setPhoto(request, env, me, name, remove, kind) {
 // Rangé à part du catalogue public (clé « tenants ») : jamais envoyé aux visiteurs.
 // Un dossier = une personne qui loue ou achète un bien. Pour une location, chaque paiement couvre des semaines
 // qui se suivent depuis la date d'entrée : payé jusqu'au = entrée + 7 jours × semaines payées.
-const TENANT_ROLES = ['admin', 'gerant'];
+// suivi des locataires : admins, gérants et employés (dont les décorateurs cochés « employé Dynasty 8 ») ; seul un admin supprime
+const canTenants = u => u.role === 'admin' || u.role === 'gerant' || isEmployee(u);
 const KINDS = ['location', 'achat'];
 const CLOSE_REASONS = ['expulsion', 'fin', 'autre'];
 const closeText = (t, r) => r === 'expulsion' ? 'expulsion' : r === 'fin' ? (t.kind === 'achat' ? 'vente terminée' : 'fin de location') : 'autre raison';
@@ -860,7 +893,7 @@ function tenantFields(t, body, isNew) {
   if (body.notes !== undefined) { const n = String(body.notes == null ? '' : body.notes).trim().slice(0, 400); if (n) t.notes = n; else delete t.notes; }
 }
 async function tenantsApi(request, env, me, path, m) {
-  if (!TENANT_ROLES.includes(me.role)) deny('Le suivi des locataires est réservé aux gérants et aux admins.');
+  if (!canTenants(me)) deny('Le suivi des locataires est réservé aux employés du Dynasty 8.');
   const rest = path === '/api/tenants' ? [] : path.slice('/api/tenants/'.length).split('/').map(x => decodeURIComponent(x));
   const store = await getJSON(env, 'tenants', { items: [] });
   if (!Array.isArray(store.items)) store.items = [];

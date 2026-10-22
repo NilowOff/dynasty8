@@ -562,6 +562,17 @@ button.day:hover { border-color: var(--ink-3); }
 .decocard .avatar.deco { width: 92px; height: 92px; font-size: 32px; margin: -48px 0 10px; box-shadow: 0 0 0 5px var(--card), 0 8px 20px -8px rgba(0,0,0,.4); }
 .decocard b { font-family: var(--display); font-stretch: var(--wide); font-weight: 800; font-size: 21px; letter-spacing: -.005em; }
 .decocard small { color: var(--ink-2); font-size: 15px; }
+/* étiquette « Décorateur Dynasty 8 » (employé de l'agence) ou « Décorateur indépendant » */
+.decotag {
+  display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 3px; padding: 3px 10px 3px 8px; border-radius: 999px;
+  background: var(--paper); border: 1px solid var(--line); color: var(--ink-2);
+  font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 13.5px; line-height: 1.2;
+  white-space: nowrap;
+}
+.decotag::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.decotag.d8 { background: var(--green-soft); border-color: transparent; color: var(--accent); }
+.decotag.d8::before { background: var(--sun); box-shadow: 0 0 0 2px var(--green); }
+.deco-id .decotag { margin: 4px 0 2px; }
 .decocard .go { margin-top: 10px; font-family: var(--label); font-stretch: var(--narrow); font-weight: 750; font-size: 15px; color: var(--accent); }
 .decocard .go::after { content: ' →'; transition: margin .2s; }
 /* le numéro du décorateur, sous sa carte : un clic le copie */
@@ -801,6 +812,10 @@ button.day:hover { border-color: var(--ink-3); }
 .staffitem small { color: var(--ink-3); font-size: 12px; }
 .staffitem select { border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 5px 6px; font-family: var(--label); font-stretch: var(--narrow); font-weight: 700; font-size: 14px; }
 .staffitem .acts { display: flex; gap: 4px; }
+.staffitem small { display: block; }
+.staffitem .decotag { margin-top: 4px; font-size: 12.5px; }
+.staffitem .staffemp { margin-top: 6px; font-size: 14px; gap: 7px; }
+.staffitem .staffemp input { width: 17px; height: 17px; }
 .staffitem .acts button { width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); display: grid; place-items: center; padding: 0; }
 .staffitem .acts svg { width: 16px; height: 16px; }
 @media (max-width: 420px) { .staffitem { grid-template-columns: 36px minmax(0, 1fr) auto; } .staffitem .acts { grid-column: 2 / -1; justify-content: flex-end; } }
@@ -1204,7 +1219,7 @@ html.intro-pending body::after { content: ''; position: fixed; inset: 0; z-index
       <a href="#/faq" data-page="faq">Réponses FAQ</a>
       <a href="#/avis" data-page="avis">Avis</a>
       <div class="dd staffnav" id="tenantNav" hidden>
-        <a href="#/locataires" data-page="locataires" class="dd-top" title="Réservé aux gérants et aux admins"><svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Locataires <span class="navbadge" id="tenantBadge" hidden></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></a>
+        <a href="#/locataires" data-page="locataires" class="dd-top" title="Réservé aux employés du Dynasty 8"><svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Locataires <span class="navbadge" id="tenantBadge" hidden></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></a>
         <div class="dd-menu" id="ddTenants"></div>
       </div>
     </nav>
@@ -1374,10 +1389,10 @@ html.intro-pending body::after { content: ''; position: fixed; inset: 0; z-index
 <div class="modal" id="modal" hidden><div class="box"><h3 id="modalTitle"></h3><p id="modalText"></p><div class="acts" id="modalActs"></div></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="stitcher.js?v=20261022c"></script>
-<script src="viewer.js?v=20261022c"></script>
-<script src="app.js?v=20261022c"></script>
-<script src="intro.js?v=20261022c"></script>
+<script src="stitcher.js?v=20261022d"></script>
+<script src="viewer.js?v=20261022d"></script>
+<script src="app.js?v=20261022d"></script>
+<script src="intro.js?v=20261022d"></script>
 
 </body>
 </html>
